@@ -27,10 +27,13 @@ import { z } from 'zod';
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
 async function main(): Promise<void> {
-    const configPath = process.env.LSP_MCP_CONFIG ?? path.join(process.cwd(), 'lsp-mcp.config.json');
-    const workspaceRoot = process.env.LSP_MCP_ROOT ?? process.cwd();
-    const pluginsDir =
-        process.env.LSP_MCP_PLUGINS_DIR ?? path.join(path.dirname(configPath), 'plugins');
+    const configPath = path.resolve(
+        process.env.LSP_MCP_CONFIG ?? path.join(process.cwd(), 'lsp-mcp.config.json'),
+    );
+    const workspaceRoot = path.resolve(process.env.LSP_MCP_ROOT ?? process.cwd());
+    const pluginsDir = path.resolve(
+        process.env.LSP_MCP_PLUGINS_DIR ?? path.join(path.dirname(configPath), 'plugins'),
+    );
 
     if (!existsSync(configPath)) {
         process.stderr.write(
