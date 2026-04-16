@@ -31,13 +31,22 @@ export class LspServer {
 
     // ---- Lifecycle ----------------------------------------------------------
 
-    /** Ensure the server process is running and initialized. Idempotent. */
+    /** Ensure the server process is running and initialized. Idempotent.
+     *  If a previous start attempt failed, calling this again will retry. */
     async ensureRunning(): Promise<void> {
         if (this._initDone) return;
         if (this._initPromise) return this._initPromise;
 
-        this._initPromise = this._start();
-        await this._initPromise;
+        this._initPromise = this._start().catch((err: unknown) => {
+            // Clear promise so the next call can retry from scratch
+            this._initPromise = null;
+            this._connection?.dispose();
+            this._connection = null;
+            this._process?.kill();
+            this._process = null;
+            throw err;
+        });
+        return this._initPromise;
     }
 
     private async _start(): Promise<void> {
@@ -136,9 +145,10 @@ export class LspServer {
     /**
      * Send textDocument/didOpen if the URI hasn't been opened yet.
      * This triggers full type-checking in servers that need it.
+     * Returns true if the document was newly opened, false if it was already open.
      */
-    async openDocument(uri: string, languageId: string): Promise<void> {
-        if (this._openedUris.has(uri)) return;
+    async openDocument(uri: string, languageId: string): Promise<boolean> {
+        if (this._openedUris.has(uri)) return false;
         await this.ensureRunning();
         const conn = this._connection!;
 
@@ -148,13 +158,15 @@ export class LspServer {
             try {
                 text = readFileSync(filePath, 'utf-8');
             } catch {
-                return;
+                return false;
             }
             conn.sendNotification('textDocument/didOpen', {
                 textDocument: { uri, languageId, version: 1, text },
             });
             this._openedUris.add(uri);
+            return true;
         }
+        return false;
     }
 
     /**

@@ -135,9 +135,13 @@ export class Router {
         if (!server) return [];
 
         const langId = langIdFromUri(fileUri, server);
-        await server.openDocument(fileUri, langId);
+        const justOpened = await server.openDocument(fileUri, langId);
         // LSP diagnostics are push-based (publishDiagnostics notification).
         // We approximate them via textDocument/diagnostic if the server supports it.
+        // Apply the same post-open settle pause used by _fileRequest.
+        if (justOpened) {
+            await new Promise((r) => setTimeout(r, 100));
+        }
         try {
             const result = await server.request('textDocument/diagnostic', {
                 textDocument: { uri: fileUri },
@@ -188,11 +192,14 @@ export class Router {
         if (!server) return fallback;
 
         const langId = langIdFromUri(fileUri, server);
-        await server.openDocument(fileUri, langId);
+        const justOpened = await server.openDocument(fileUri, langId);
         // Give the server a short window to process the didOpen notification before
         // dispatching the actual request.  Without this pause some servers (e.g. Pyright)
         // return stale results because the document hasn't been parsed yet.
-        await new Promise((r) => setTimeout(r, 100));
+        // Only needed on the first open — subsequent requests on the same URI skip the wait.
+        if (justOpened) {
+            await new Promise((r) => setTimeout(r, 100));
+        }
 
         try {
             const result = await server.request(method, params);

@@ -23,7 +23,7 @@ function makeMockServer(langIds: string[], fileGlobs: string[]): jest.Mocked<Lsp
         ensureRunning: jest.fn().mockResolvedValue(undefined),
         shutdown: jest.fn().mockResolvedValue(undefined),
         request: jest.fn(),
-        openDocument: jest.fn().mockResolvedValue(undefined),
+        openDocument: jest.fn().mockResolvedValue(false),
         waitForAnalysis: jest.fn().mockResolvedValue(undefined),
         workspaceSymbol: jest.fn().mockResolvedValue([]),
         ownsFile: jest.fn((filePath: string) =>

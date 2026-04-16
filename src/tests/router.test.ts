@@ -21,7 +21,7 @@ function makeMockServer(langIds: string[], fileGlobs: string[]): jest.Mocked<Lsp
         ensureRunning: jest.fn().mockResolvedValue(undefined),
         shutdown: jest.fn().mockResolvedValue(undefined),
         request: jest.fn(),
-        openDocument: jest.fn().mockResolvedValue(undefined),
+        openDocument: jest.fn().mockResolvedValue(false),
         waitForAnalysis: jest.fn().mockResolvedValue(undefined),
         workspaceSymbol: jest.fn(),
         ownsFile: jest.fn((filePath: string) =>
@@ -190,5 +190,37 @@ describe('Router.shutdownAll', () => {
 
         expect(s1.shutdown).toHaveBeenCalled();
         expect(s2.shutdown).toHaveBeenCalled();
+    });
+});
+
+describe('Router._fileRequest — post-open pause', () => {
+    it('skips the 100ms pause when document was already open', async () => {
+        const pyServer = makeMockServer(['python'], ['**/*.py']);
+        // Simulate document already open: openDocument returns false
+        (pyServer.openDocument as jest.Mock).mockResolvedValue(false);
+        (pyServer.request as jest.Mock).mockResolvedValue([]);
+
+        const router = new Router([pyServer]);
+        const start = Date.now();
+        await router.definitions('file:///main.py', { line: 0, character: 0 });
+        const elapsed = Date.now() - start;
+
+        // Should NOT have waited 100ms
+        expect(elapsed).toBeLessThan(80);
+    });
+
+    it('applies the 100ms pause when document is newly opened', async () => {
+        const pyServer = makeMockServer(['python'], ['**/*.py']);
+        // Simulate first open: openDocument returns true
+        (pyServer.openDocument as jest.Mock).mockResolvedValue(true);
+        (pyServer.request as jest.Mock).mockResolvedValue([]);
+
+        const router = new Router([pyServer]);
+        const start = Date.now();
+        await router.definitions('file:///main.py', { line: 0, character: 0 });
+        const elapsed = Date.now() - start;
+
+        // Should have waited ~100ms
+        expect(elapsed).toBeGreaterThanOrEqual(80);
     });
 });
