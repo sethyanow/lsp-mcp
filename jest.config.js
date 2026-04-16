@@ -6,7 +6,7 @@ module.exports = {
             'ts-jest',
             {
                 tsconfig: {
-                    target: 'es2019',
+                    target: 'es2020',
                     module: 'node16',
                     moduleResolution: 'node16',
                     preserveConstEnums: false,

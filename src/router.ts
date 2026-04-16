@@ -189,6 +189,9 @@ export class Router {
 
         const langId = langIdFromUri(fileUri, server);
         await server.openDocument(fileUri, langId);
+        // Give the server a short window to process the didOpen notification before
+        // dispatching the actual request.  Without this pause some servers (e.g. Pyright)
+        // return stale results because the document hasn't been parsed yet.
         await new Promise((r) => setTimeout(r, 100));
 
         try {
