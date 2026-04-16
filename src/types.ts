@@ -26,6 +26,7 @@ export interface PluginManifest {
         workspaceSymbol?: { stringPrefilter: boolean; timeoutMs?: number };
         implementations?: { stringPrefilter: boolean };
         callHierarchy?: boolean;
+        didOpenDelayMs?: number;
     };
     /** Paths to skill directories */
     skills?: string[];

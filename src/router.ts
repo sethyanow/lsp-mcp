@@ -140,7 +140,8 @@ export class Router {
         // We approximate them via textDocument/diagnostic if the server supports it.
         // Apply the same post-open settle pause used by _fileRequest.
         if (justOpened) {
-            await new Promise((r) => setTimeout(r, 100));
+            const delay = Number(server.manifest.capabilities?.didOpenDelayMs) || 100;
+            await new Promise((r) => setTimeout(r, delay));
         }
         try {
             const result = await server.request('textDocument/diagnostic', {
@@ -157,14 +158,13 @@ export class Router {
     async raw(
         lang: string,
         method: string,
-        params: Record<string, unknown>
+        params: unknown
     ): Promise<unknown> {
         const server = this.serverForLang(lang);
         if (!server) {
             throw new Error(`No server configured for language: ${lang}`);
         }
-        await server.ensureRunning();
-        return server.request(method, params);
+        return server.request(method, params as Record<string, unknown>);
     }
 
     // ---- Lifecycle ----------------------------------------------------------
@@ -198,7 +198,8 @@ export class Router {
         // return stale results because the document hasn't been parsed yet.
         // Only needed on the first open — subsequent requests on the same URI skip the wait.
         if (justOpened) {
-            await new Promise((r) => setTimeout(r, 100));
+            const delay = Number(server.manifest.capabilities?.didOpenDelayMs) || 100;
+            await new Promise((r) => setTimeout(r, delay));
         }
 
         try {
@@ -225,7 +226,7 @@ function buildTextDocParams(
 }
 
 function dedupeKey(loc: Location): string {
-    return `${loc.uri}:${loc.range.start.line}:${loc.range.start.character}`;
+    return `${loc.uri}:${loc.range.start.line}:${loc.range.start.character}:${loc.range.end.line}:${loc.range.end.character}`;
 }
 
 function langIdFromUri(uri: string, server: LspServer): string {

@@ -14,6 +14,7 @@
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.12.1",
+        "minimatch": "^10.0.1",
         "vscode-jsonrpc": "^9.0.0-next.8",
         "zod": "^3.24.4"
     },

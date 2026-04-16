@@ -7,6 +7,7 @@ import {
     StreamMessageReader,
     StreamMessageWriter,
 } from 'vscode-jsonrpc/node';
+import { minimatch } from 'minimatch';
 import type { PluginManifest, SymbolInfo } from './types.js';
 
 /**
@@ -114,6 +115,7 @@ export class LspServer {
         this._process = null;
         this._initDone = false;
         this._initPromise = null;
+        this._openedUris.clear();
     }
 
     // ---- Request forwarding -------------------------------------------------
@@ -131,14 +133,15 @@ export class LspServer {
         const conn = this._connection!;
 
         const requestType = new RequestType<Record<string, unknown>, unknown, void>(method);
+        let timerId: NodeJS.Timeout;
         return Promise.race([
-            conn.sendRequest(requestType, params),
-            new Promise<never>((_, reject) =>
-                setTimeout(
+            conn.sendRequest(requestType, params).finally(() => clearTimeout(timerId)),
+            new Promise<never>((_, reject) => {
+                timerId = setTimeout(
                     () => reject(new Error(`LSP request timed out after ${timeoutMs}ms: ${method}`)),
                     timeoutMs
-                )
-            ),
+                );
+            }),
         ]);
     }
 
@@ -223,11 +226,8 @@ export class LspServer {
 
     /** Returns true if this plugin handles the given file extension / language ID. */
     ownsFile(filePath: string): boolean {
-        const lower = filePath.toLowerCase();
         return this.manifest.fileGlobs.some((glob) => {
-            // Simple extension matching (e.g. "**/*.py" → ".py")
-            const ext = glob.replace(/\*\*\/\*/, '');
-            return lower.endsWith(ext);
+            return minimatch(filePath, glob, { nocase: true, dot: true });
         });
     }
 

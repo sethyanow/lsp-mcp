@@ -51,6 +51,34 @@ async function main(): Promise<void> {
     try {
         const raw = readFileSync(configPath, 'utf-8');
         manifests = JSON.parse(raw) as PluginManifest[];
+
+        // Validate that manifests is an array
+        if (!Array.isArray(manifests)) {
+            process.stderr.write(
+                `lsp-mcp: config file ${configPath} must contain an array of PluginManifest objects, got ${typeof manifests}\n`
+            );
+            process.exit(1);
+        }
+
+        // Validate that each entry has required properties
+        for (let i = 0; i < manifests.length; i++) {
+            const m = manifests[i];
+            if (!m || typeof m !== 'object') {
+                process.stderr.write(
+                    `lsp-mcp: config file ${configPath}: entry at index ${i} is not an object\n`
+                );
+                process.exit(1);
+            }
+            const required = ['name', 'langIds', 'fileGlobs', 'server', 'capabilities'];
+            for (const key of required) {
+                if (!(key in m)) {
+                    process.stderr.write(
+                        `lsp-mcp: config file ${configPath}: entry at index ${i} (${m.name || 'unnamed'}) missing required property: ${key}\n`
+                    );
+                    process.exit(1);
+                }
+            }
+        }
     } catch (err) {
         process.stderr.write(`lsp-mcp: failed to parse config: ${(err as Error).message}\n`);
         process.exit(1);

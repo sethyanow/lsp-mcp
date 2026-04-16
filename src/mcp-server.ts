@@ -57,15 +57,18 @@ export function createMcpServer(router: Router): McpServer {
         async ({ name, kind, langs }) => {
             try {
                 const symbols = await router.symbolSearch(name, langs);
+                // Normalize numeric kind values to SymbolKind enum/string
+                const normalized = symbols.map(s => ({
+                    ...s,
+                    kind: symbolKindName(s.kind)
+                }));
                 const filtered =
                     kind
-                        ? symbols.filter(
+                        ? normalized.filter(
                               (s) =>
-                                  symbolKindName(s.kind)
-                                      .toLowerCase()
-                                      .includes(kind.toLowerCase())
+                                  typeof s.kind === 'string' && s.kind.toLowerCase() === kind.toLowerCase()
                           )
-                        : symbols;
+                        : normalized;
 
                 return {
                     content: [
@@ -273,13 +276,13 @@ export function createMcpServer(router: Router): McpServer {
                     .describe('Language ID of the target server (e.g. "python", "typescript")'),
                 method: z.string().describe('LSP method name (e.g. "textDocument/codeLens")'),
                 params: z
-                    .record(z.string(), z.any())
-                    .describe('LSP request parameters as a JSON object'),
+                    .any()
+                    .describe('JSON-RPC params (object, array, or null)'),
             },
         },
         async ({ lang, method, params }) => {
             try {
-                const result = await router.raw(lang, method, params as Record<string, unknown>);
+                const result = await router.raw(lang, method, params);
                 return {
                     content: [
                         {
