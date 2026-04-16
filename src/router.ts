@@ -60,10 +60,11 @@ export class Router {
         for (let i = 0; i < settled.length; i++) {
             const result = settled[i];
             if (result.status !== 'fulfilled') {
+                const reason = result.reason;
+                const message =
+                    reason instanceof Error ? reason.message : String(reason);
                 process.stderr.write(
-                    `[lsp-mcp] symbol_search on ${targets[i].manifest.name} failed: ${
-                        (result.reason as Error).message
-                    }\n`
+                    `[lsp-mcp] symbol_search on ${targets[i].manifest.name} failed: ${message}\n`
                 );
                 continue;
             }

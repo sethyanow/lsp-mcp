@@ -67,7 +67,7 @@ Create a config file (default: `lsp-mcp.config.json` in the working directory) c
 | `name` | Unique plugin identifier. |
 | `langIds` | LSP language IDs handled by this server (used for routing). |
 | `fileGlobs` | Glob patterns that identify files owned by this server. |
-| `workspaceMarkers` | File/directory names that mark a project root (for monorepo detection). |
+| `workspaceMarkers` | File/directory names that mark a project root. lsp-mcp walks up from `LSP_MCP_ROOT` to find the nearest directory containing any marker and uses that as the server's `rootUri`. Empty array → use `LSP_MCP_ROOT` verbatim. |
 | `server.cmd` | Command array to spawn the LSP server. `${pluginDir}` expands to `$LSP_MCP_PLUGINS_DIR/<manifest.name>`. |
 | `server.buildHook` | Optional shell command run **once per process** before the first spawn. Executed with `cwd=pluginDir` (if it exists) and `LSP_MCP_PLUGIN_DIR` in the env. Non-zero exit aborts startup. |
 | `server.initOptions` | Passed as LSP `initializationOptions`. |
@@ -76,7 +76,6 @@ Create a config file (default: `lsp-mcp.config.json` in the working directory) c
 | `capabilities.implementations.stringPrefilter` | Same contract as above, for `textDocument/implementation`. If `false`, lsp-mcp emits a startup warning — outer-layer prefilter is not yet implemented. |
 | `capabilities.callHierarchy` | `true` to register the `call_hierarchy_prepare` / `incoming_calls` / `outgoing_calls` tools. Omit when no server supports LSP call hierarchy. |
 | `capabilities.didOpenDelayMs` | Milliseconds to wait after `textDocument/didOpen` before dispatching the first request on a file (default 100). Raise for slow-warming servers. |
-| `workspaceMarkers` | File/dir names that mark a project root. lsp-mcp walks up from `LSP_MCP_ROOT` to find the nearest marker and uses that directory as the server's `rootUri`. Empty array → use `LSP_MCP_ROOT` verbatim. |
 
 ## Usage
 

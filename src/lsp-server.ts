@@ -191,15 +191,20 @@ export class LspServer {
 
         const requestType = new RequestType<unknown, unknown, void>(method);
         let timerId: NodeJS.Timeout;
-        return Promise.race([
-            conn.sendRequest(requestType, params).finally(() => clearTimeout(timerId)),
-            new Promise<never>((_, reject) => {
-                timerId = setTimeout(
-                    () => reject(new Error(`LSP request timed out after ${timeoutMs}ms: ${method}`)),
-                    timeoutMs
-                );
-            }),
-        ]);
+        try {
+            return await Promise.race([
+                conn.sendRequest(requestType, params).finally(() => clearTimeout(timerId)),
+                new Promise<never>((_, reject) => {
+                    timerId = setTimeout(
+                        () => reject(new Error(`LSP request timed out after ${timeoutMs}ms: ${method}`)),
+                        timeoutMs
+                    );
+                }),
+            ]);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new Error(`[${this.manifest.name}] ${msg}`);
+        }
     }
 
     /**
@@ -240,13 +245,22 @@ export class LspServer {
      * once any symbols come back, the background index has advanced enough
      * that a real query won't give a cold-cache false-negative.
      */
-    async waitForAnalysis(retries = 50, intervalMs = 200): Promise<boolean> {
+    async waitForAnalysis(
+        retries = 50,
+        intervalMs = 200,
+        probeTimeoutMs = 2_000,
+    ): Promise<boolean> {
         await this.ensureRunning();
         for (let i = 0; i < retries; i++) {
-            const probe = await this._connection!.sendRequest('workspace/symbol', { query: '' });
-            if (Array.isArray(probe) && probe.length > 0) {
-                this._warm = true;
-                return true;
+            try {
+                const probe = await this.request('workspace/symbol', { query: '' }, probeTimeoutMs);
+                if (Array.isArray(probe) && probe.length > 0) {
+                    this._warm = true;
+                    return true;
+                }
+            } catch {
+                // Probe timed out or errored — keep polling until the
+                // retry budget is exhausted.
             }
             await new Promise((r) => setTimeout(r, intervalMs));
         }
@@ -316,14 +330,24 @@ export class LspServer {
         if (!hook) return;
         const resolved = this._expandPluginDir(hook);
         const pluginDir = path.join(this._pluginsDir, this.manifest.name);
-        const result = spawnSync('sh', ['-c', resolved], {
+        // shell: true runs the command via the platform's default shell
+        // (/bin/sh on POSIX, cmd.exe on Windows), keeping plugins portable.
+        const result = spawnSync(resolved, {
+            shell: true,
             cwd: existsSync(pluginDir) ? pluginDir : this._workspaceRoot,
             env: { ...process.env, LSP_MCP_PLUGIN_DIR: pluginDir },
             stdio: 'inherit',
         });
-        if (result.status !== 0) {
+        if (result.error) {
             throw new Error(
-                `buildHook for plugin "${this.manifest.name}" exited with status ${result.status}`
+                `buildHook for plugin "${this.manifest.name}" failed to launch: ${result.error.message}`
+            );
+        }
+        if (result.status !== 0) {
+            const detail =
+                result.status === null ? `signal ${result.signal}` : `status ${result.status}`;
+            throw new Error(
+                `buildHook for plugin "${this.manifest.name}" exited with ${detail}`
             );
         }
     }

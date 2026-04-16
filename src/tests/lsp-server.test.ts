@@ -89,6 +89,32 @@ describe('normalizeSymbol', () => {
         expect(normalizeSymbol({ name: 'x', kind: 1 })).toBeNull();
         expect(normalizeSymbol({ name: 'x', kind: 1, location: {} })).toBeNull();
     });
+
+    it('substitutes a zero-range when range is structurally invalid', () => {
+        const raw = {
+            name: 'x',
+            kind: 5,
+            location: { uri: 'file:///a.py', range: 'not-a-range' },
+        };
+        const sym = normalizeSymbol(raw);
+        expect(sym?.location.range).toEqual({
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+        });
+
+        const partial = {
+            name: 'x',
+            kind: 5,
+            location: {
+                uri: 'file:///a.py',
+                range: { start: { line: 1 }, end: { line: 1, character: 2 } },
+            },
+        };
+        expect(normalizeSymbol(partial)?.location.range).toEqual({
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+        });
+    });
 });
 
 describe('LspServer lifecycle', () => {

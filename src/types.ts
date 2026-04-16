@@ -118,7 +118,7 @@ export function normalizeSymbol(raw: unknown): SymbolInfo | null {
     if (typeof r.name !== 'string' || typeof r.kind !== 'number') return null;
     const loc = r.location as Record<string, unknown> | undefined;
     if (!loc || typeof loc.uri !== 'string') return null;
-    const range = (loc.range as Range | undefined) ?? ZERO_RANGE;
+    const range = isRange(loc.range) ? (loc.range as Range) : ZERO_RANGE;
     const out: SymbolInfo = {
         name: r.name,
         kind: r.kind as SymbolKind,
@@ -126,4 +126,16 @@ export function normalizeSymbol(raw: unknown): SymbolInfo | null {
     };
     if (typeof r.containerName === 'string') out.containerName = r.containerName;
     return out;
+}
+
+function isPosition(val: unknown): val is Position {
+    if (!val || typeof val !== 'object') return false;
+    const p = val as Record<string, unknown>;
+    return typeof p.line === 'number' && typeof p.character === 'number';
+}
+
+function isRange(val: unknown): val is Range {
+    if (!val || typeof val !== 'object') return false;
+    const r = val as Record<string, unknown>;
+    return isPosition(r.start) && isPosition(r.end);
 }
