@@ -146,12 +146,31 @@ describe('Router.symbolSearch', () => {
         ]);
 
         const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-        const router = new Router([bad, good]);
-        const results = await router.symbolSearch('X');
+        try {
+            const router = new Router([bad, good]);
+            const results = await router.symbolSearch('X');
 
-        expect(results).toHaveLength(1);
-        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('boom'));
-        stderrSpy.mockRestore();
+            expect(results).toHaveLength(1);
+            expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('boom'));
+        } finally {
+            stderrSpy.mockRestore();
+        }
+    });
+
+    it('keeps URI-only symbols distinct by name even with identical zero-range', async () => {
+        const pyServer = makeMockServer(['python'], ['**/*.py']);
+        const sameLoc = { uri: 'file:///a.py', range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+        } };
+        (pyServer.workspaceSymbol as jest.Mock).mockResolvedValue([
+            { name: 'Alpha', kind: SymbolKind.Class, location: sameLoc },
+            { name: 'Beta', kind: SymbolKind.Class, location: sameLoc },
+        ]);
+
+        const router = new Router([pyServer]);
+        const results = await router.symbolSearch('');
+        expect(results.map((s) => s.name).sort()).toEqual(['Alpha', 'Beta']);
     });
 });
 
@@ -321,29 +340,35 @@ describe('Router.shutdownAll / forceKillAll', () => {
 });
 
 describe('Router._fileRequest — post-open pause', () => {
-    it('skips the pause when document was already open', async () => {
+    it('skips the 100ms pause when document was already open', async () => {
         const pyServer = makeMockServer(['python'], ['**/*.py']);
         (pyServer.openDocument as jest.Mock).mockResolvedValue(false);
         (pyServer.request as jest.Mock).mockResolvedValue([]);
 
-        const router = new Router([pyServer]);
-        const start = Date.now();
-        await router.definitions('file:///main.py', { line: 0, character: 0 });
-        const elapsed = Date.now() - start;
-
-        expect(elapsed).toBeLessThan(80);
+        const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+        try {
+            const router = new Router([pyServer]);
+            await router.definitions('file:///main.py', { line: 0, character: 0 });
+            const delayCalls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 100);
+            expect(delayCalls).toHaveLength(0);
+        } finally {
+            setTimeoutSpy.mockRestore();
+        }
     });
 
-    it('applies the pause when document is newly opened', async () => {
+    it('schedules a 100ms pause when the document is newly opened', async () => {
         const pyServer = makeMockServer(['python'], ['**/*.py']);
         (pyServer.openDocument as jest.Mock).mockResolvedValue(true);
         (pyServer.request as jest.Mock).mockResolvedValue([]);
 
-        const router = new Router([pyServer]);
-        const start = Date.now();
-        await router.definitions('file:///main.py', { line: 0, character: 0 });
-        const elapsed = Date.now() - start;
-
-        expect(elapsed).toBeGreaterThanOrEqual(80);
+        const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+        try {
+            const router = new Router([pyServer]);
+            await router.definitions('file:///main.py', { line: 0, character: 0 });
+            const delayCalls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 100);
+            expect(delayCalls).toHaveLength(1);
+        } finally {
+            setTimeoutSpy.mockRestore();
+        }
     });
 });

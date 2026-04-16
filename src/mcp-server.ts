@@ -9,7 +9,20 @@ const PositionSchema = z.object({
 
 const FileUriSchema = z
     .string()
-    .regex(/^file:\/\//, 'must be a file:// URI (e.g. "file:///abs/path/to/file.py")')
+    .refine(
+        (s) => {
+            try {
+                const u = new URL(s);
+                return (
+                    u.protocol === 'file:' &&
+                    (u.hostname === '' || u.hostname === 'localhost')
+                );
+            } catch {
+                return false;
+            }
+        },
+        { message: 'must be a local file:// URI (e.g. "file:///abs/path/to/file.py")' },
+    )
     .describe('File URI (e.g. "file:///abs/path/to/file.py")');
 
 const LspParamsSchema = z

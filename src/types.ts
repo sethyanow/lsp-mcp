@@ -6,7 +6,7 @@ import { z } from 'zod';
 // ---- Plugin manifest -------------------------------------------------------
 
 const CapabilityFlagSchema = z.object({
-    stringPrefilter: z.boolean(),
+    stringPrefilter: z.boolean().optional(),
     timeoutMs: z.number().int().positive().optional(),
 });
 

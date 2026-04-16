@@ -29,7 +29,7 @@ export class LspServer {
     private _workspaceRoot: string;
     private _pluginsDir: string;
     private _builtOnce = false;
-    private _warm = false;
+    private _warmupAttempted = false;
     private _resolvedRootUri: string | null = null;
 
     constructor(manifest: PluginManifest, workspaceRoot: string, pluginsDir: string) {
@@ -156,7 +156,7 @@ export class LspServer {
         this._initDone = false;
         this._initPromise = null;
         this._openedUris.clear();
-        this._warm = false;
+        this._warmupAttempted = false;
     }
 
     /** Force-kill the child process without waiting for a graceful LSP exit. */
@@ -172,7 +172,7 @@ export class LspServer {
         this._initDone = false;
         this._initPromise = null;
         this._openedUris.clear();
-        this._warm = false;
+        this._warmupAttempted = false;
     }
 
     // ---- Request forwarding -------------------------------------------------
@@ -251,20 +251,28 @@ export class LspServer {
         probeTimeoutMs = 2_000,
     ): Promise<boolean> {
         await this.ensureRunning();
-        for (let i = 0; i < retries; i++) {
-            try {
-                const probe = await this.request('workspace/symbol', { query: '' }, probeTimeoutMs);
-                if (Array.isArray(probe) && probe.length > 0) {
-                    this._warm = true;
-                    return true;
+        try {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const probe = await this.request(
+                        'workspace/symbol',
+                        { query: '' },
+                        probeTimeoutMs,
+                    );
+                    if (Array.isArray(probe) && probe.length > 0) return true;
+                } catch {
+                    // Probe timed out or errored — keep polling until the
+                    // retry budget is exhausted.
                 }
-            } catch {
-                // Probe timed out or errored — keep polling until the
-                // retry budget is exhausted.
+                await new Promise((r) => setTimeout(r, intervalMs));
             }
-            await new Promise((r) => setTimeout(r, intervalMs));
+            return false;
+        } finally {
+            // Flip regardless of outcome. An empty workspace or a server
+            // that never responds to query: '' should not pay the full
+            // warm-up budget on every subsequent call.
+            this._warmupAttempted = true;
         }
-        return false;
     }
 
     /**
@@ -285,7 +293,7 @@ export class LspServer {
         const effectiveTimeout = timeoutMs ?? manifestTimeout;
         const deadline = Date.now() + effectiveTimeout;
 
-        if (!this._warm) {
+        if (!this._warmupAttempted) {
             const retries = Math.max(1, Math.floor(effectiveTimeout / 200));
             await this.waitForAnalysis(retries, 200);
             // Fall through even if warm-up didn't find anything — the caller's
@@ -301,7 +309,6 @@ export class LspServer {
             const sym = normalizeSymbol(entry);
             if (sym) out.push(sym);
         }
-        if (out.length > 0) this._warm = true;
         return out;
     }
 

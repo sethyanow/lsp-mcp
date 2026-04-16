@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { LspServer, findRoot } from '../lsp-server';
 import { normalizeSymbol, PluginManifestSchema } from '../types';
 import type { PluginManifest } from '../types';
@@ -149,7 +150,7 @@ describe('LspServer lifecycle', () => {
     it('openDocument dedups by uri', async () => {
         server = new LspServer(manifest(), process.cwd(), '/unused');
         const filePath = path.resolve(__dirname, 'fixtures/stub-lsp.js');
-        const uri = `file://${filePath}`;
+        const uri = pathToFileURL(filePath).toString();
 
         expect(await server.openDocument(uri, 'python')).toBe(true);
         expect(await server.openDocument(uri, 'python')).toBe(false);
@@ -161,7 +162,7 @@ describe('LspServer lifecycle', () => {
     it('shutdown clears _openedUris and _warm state', async () => {
         server = new LspServer(manifest(), process.cwd(), '/unused');
         const filePath = path.resolve(__dirname, 'fixtures/stub-lsp.js');
-        const uri = `file://${filePath}`;
+        const uri = pathToFileURL(filePath).toString();
 
         await server.workspaceSymbol('X'); // warms
         await server.openDocument(uri, 'python');
@@ -290,5 +291,16 @@ describe('LspServer.ownsFile', () => {
         expect(server.ownsFile('src/a/b/c.py')).toBe(true);
         expect(server.ownsFile('stub.pyi')).toBe(true);
         expect(server.ownsFile('other/x.py')).toBe(false);
+    });
+
+    it('does not match partial extensions or other file types', () => {
+        const server = new LspServer(
+            manifest({ fileGlobs: ['src/**/*.py', '**/*.pyi'] }),
+            process.cwd(),
+            '/unused',
+        );
+        expect(server.ownsFile('src/a/b/c.txt')).toBe(false);
+        expect(server.ownsFile('src/a/b/c.pyx')).toBe(false);
+        expect(server.ownsFile('src/a/b/python.js')).toBe(false);
     });
 });

@@ -69,7 +69,7 @@ export class Router {
                 continue;
             }
             for (const sym of result.value) {
-                const key = dedupeKey(sym.location);
+                const key = dedupeKey(sym);
                 if (!seen.has(key)) {
                     seen.add(key);
                     merged.push(sym);
@@ -260,6 +260,19 @@ function buildTextDocParams(
     return { textDocument: { uri }, position };
 }
 
-function dedupeKey(loc: Location): string {
-    return `${loc.uri}:${loc.range.start.line}:${loc.range.start.character}:${loc.range.end.line}:${loc.range.end.character}`;
+function dedupeKey(sym: SymbolInfo): string {
+    const r = sym.location.range;
+    // Include name/kind/containerName so multiple symbols from the same file
+    // without ranges (e.g. WorkspaceSymbol entries normalized to zero-range)
+    // don't collapse into a single entry.
+    return [
+        sym.location.uri,
+        r.start.line,
+        r.start.character,
+        r.end.line,
+        r.end.character,
+        sym.kind,
+        sym.name,
+        sym.containerName ?? '',
+    ].join(':');
 }

@@ -382,6 +382,7 @@ describe('diagnostics tool', () => {
                 arguments: { file: 'file:///main.py' },
             });
             expect(result.isError).toBe(true);
+            expect(textOf(result as { content: unknown })).toContain('Method not found');
         } finally {
             stderrSpy.mockRestore();
         }
