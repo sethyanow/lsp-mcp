@@ -249,22 +249,28 @@ export class LspServer {
         retries = 50,
         intervalMs = 200,
         probeTimeoutMs = 2_000,
+        deadlineMs = Infinity,
     ): Promise<boolean> {
         await this.ensureRunning();
         try {
             for (let i = 0; i < retries; i++) {
+                const now = Date.now();
+                if (now >= deadlineMs) return false;
+                const probeBudget = Math.min(probeTimeoutMs, deadlineMs - now);
                 try {
                     const probe = await this.request(
                         'workspace/symbol',
                         { query: '' },
-                        probeTimeoutMs,
+                        probeBudget,
                     );
                     if (Array.isArray(probe) && probe.length > 0) return true;
                 } catch {
                     // Probe timed out or errored — keep polling until the
-                    // retry budget is exhausted.
+                    // retry budget or deadline is exhausted.
                 }
-                await new Promise((r) => setTimeout(r, intervalMs));
+                const sleepBudget = Math.min(intervalMs, deadlineMs - Date.now());
+                if (sleepBudget <= 0) return false;
+                await new Promise((r) => setTimeout(r, sleepBudget));
             }
             return false;
         } finally {
@@ -294,8 +300,13 @@ export class LspServer {
         const deadline = Date.now() + effectiveTimeout;
 
         if (!this._warmupAttempted) {
+            // Reserve a minimum slice of the budget for the real query so
+            // warm-up can't consume the entire timeout on a stalled server.
+            const reserved = Math.min(1_000, Math.floor(effectiveTimeout / 4));
+            const warmupDeadline = deadline - reserved;
             const retries = Math.max(1, Math.floor(effectiveTimeout / 200));
-            await this.waitForAnalysis(retries, 200);
+            const probeCap = Math.min(1_000, effectiveTimeout);
+            await this.waitForAnalysis(retries, 200, probeCap, warmupDeadline);
             // Fall through even if warm-up didn't find anything — the caller's
             // query might still return results, and we don't want to hang past
             // the deadline.
@@ -343,7 +354,10 @@ export class LspServer {
             shell: true,
             cwd: existsSync(pluginDir) ? pluginDir : this._workspaceRoot,
             env: { ...process.env, LSP_MCP_PLUGIN_DIR: pluginDir },
-            stdio: 'inherit',
+            // Redirect stdout to stderr so hook output (e.g. `npm install`
+            // progress) can never interleave with JSON-RPC frames on the
+            // parent's stdout — that's the MCP transport.
+            stdio: ['ignore', 2, 2],
         });
         if (result.error) {
             throw new Error(
