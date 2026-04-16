@@ -7,6 +7,15 @@ const PositionSchema = z.object({
     character: z.number().int().min(0).describe('0-based character offset'),
 });
 
+const FileUriSchema = z
+    .string()
+    .regex(/^file:\/\//, 'must be a file:// URI (e.g. "file:///abs/path/to/file.py")')
+    .describe('File URI (e.g. "file:///abs/path/to/file.py")');
+
+const LspParamsSchema = z
+    .union([z.record(z.any()), z.array(z.any()), z.null()])
+    .describe('JSON-RPC params (object, array, or null)');
+
 /**
  * Create the meta-LSP MCP server.
  * All tools delegate to the router which fans requests to the appropriate
@@ -21,6 +30,9 @@ const PositionSchema = z.object({
  *   outline       — document symbols
  *   diagnostics   — errors / warnings for a file
  *   lsp           — raw passthrough (escape hatch)
+ *
+ * Tools gated on at least one manifest declaring `capabilities.callHierarchy`:
+ *   call_hierarchy_prepare, incoming_calls, outgoing_calls
  */
 export function createMcpServer(router: Router): McpServer {
     const server = new McpServer({
@@ -57,37 +69,21 @@ export function createMcpServer(router: Router): McpServer {
         async ({ name, kind, langs }) => {
             try {
                 const symbols = await router.symbolSearch(name, langs);
-                // Normalize numeric kind values to SymbolKind enum/string
-                const normalized = symbols.map(s => ({
+                const normalized = symbols.map((s) => ({
                     ...s,
-                    kind: symbolKindName(s.kind)
+                    kind: symbolKindName(s.kind),
                 }));
-                const filtered =
-                    kind
-                        ? normalized.filter(
-                              (s) =>
-                                  typeof s.kind === 'string' && s.kind.toLowerCase() === kind.toLowerCase()
-                          )
-                        : normalized;
+                const filtered = kind
+                    ? normalized.filter(
+                          (s) =>
+                              typeof s.kind === 'string' &&
+                              s.kind.toLowerCase() === kind.toLowerCase()
+                      )
+                    : normalized;
 
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(filtered, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(filtered);
             } catch (err) {
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: `symbol_search error: ${(err as Error).message}`,
-                        },
-                    ],
-                    isError: true,
-                };
+                return toolError('symbol_search', err);
             }
         }
     );
@@ -100,24 +96,13 @@ export function createMcpServer(router: Router): McpServer {
             description:
                 'Go-to-definition: returns the location(s) where the symbol at the given ' +
                 'position is defined.',
-            inputSchema: {
-                file: z.string().describe('File URI (e.g. "file:///abs/path/to/file.py")'),
-                pos: PositionSchema,
-            },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema },
         },
         async ({ file, pos }) => {
             try {
-                const locations = await router.definitions(file, pos);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(locations, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.definitions(file, pos));
             } catch (err) {
-                return errorResult(`defs error: ${(err as Error).message}`);
+                return toolError('defs', err);
             }
         }
     );
@@ -128,24 +113,13 @@ export function createMcpServer(router: Router): McpServer {
         'refs',
         {
             description: 'Find all references to the symbol at the given position.',
-            inputSchema: {
-                file: z.string().describe('File URI'),
-                pos: PositionSchema,
-            },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema },
         },
         async ({ file, pos }) => {
             try {
-                const locations = await router.references(file, pos);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(locations, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.references(file, pos));
             } catch (err) {
-                return errorResult(`refs error: ${(err as Error).message}`);
+                return toolError('refs', err);
             }
         }
     );
@@ -158,24 +132,13 @@ export function createMcpServer(router: Router): McpServer {
             description:
                 'Find implementations (concrete subclasses / interface implementations) of ' +
                 'the symbol at the given position.',
-            inputSchema: {
-                file: z.string().describe('File URI'),
-                pos: PositionSchema,
-            },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema },
         },
         async ({ file, pos }) => {
             try {
-                const locations = await router.implementations(file, pos);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(locations, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.implementations(file, pos));
             } catch (err) {
-                return errorResult(`impls error: ${(err as Error).message}`);
+                return toolError('impls', err);
             }
         }
     );
@@ -186,24 +149,13 @@ export function createMcpServer(router: Router): McpServer {
         'hover',
         {
             description: 'Return type information and documentation for the symbol at the given position.',
-            inputSchema: {
-                file: z.string().describe('File URI'),
-                pos: PositionSchema,
-            },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema },
         },
         async ({ file, pos }) => {
             try {
-                const info = await router.hover(file, pos);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(info, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.hover(file, pos));
             } catch (err) {
-                return errorResult(`hover error: ${(err as Error).message}`);
+                return toolError('hover', err);
             }
         }
     );
@@ -214,23 +166,13 @@ export function createMcpServer(router: Router): McpServer {
         'outline',
         {
             description: 'List all symbols defined in a file (document symbol outline).',
-            inputSchema: {
-                file: z.string().describe('File URI'),
-            },
+            inputSchema: { file: FileUriSchema },
         },
         async ({ file }) => {
             try {
-                const symbols = await router.documentSymbols(file);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(symbols, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.documentSymbols(file));
             } catch (err) {
-                return errorResult(`outline error: ${(err as Error).message}`);
+                return toolError('outline', err);
             }
         }
     );
@@ -241,23 +183,13 @@ export function createMcpServer(router: Router): McpServer {
         'diagnostics',
         {
             description: 'Return errors and warnings for a file.',
-            inputSchema: {
-                file: z.string().describe('File URI'),
-            },
+            inputSchema: { file: FileUriSchema },
         },
         async ({ file }) => {
             try {
-                const diags = await router.diagnostics(file);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(diags, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.diagnostics(file));
             } catch (err) {
-                return errorResult(`diagnostics error: ${(err as Error).message}`);
+                return toolError('diagnostics', err);
             }
         }
     );
@@ -275,36 +207,101 @@ export function createMcpServer(router: Router): McpServer {
                     .string()
                     .describe('Language ID of the target server (e.g. "python", "typescript")'),
                 method: z.string().describe('LSP method name (e.g. "textDocument/codeLens")'),
-                params: z
-                    .any()
-                    .describe('JSON-RPC params (object, array, or null)'),
+                params: LspParamsSchema,
             },
         },
         async ({ lang, method, params }) => {
             try {
-                const result = await router.raw(lang, method, params);
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: JSON.stringify(result, null, 2),
-                        },
-                    ],
-                };
+                return jsonResult(await router.raw(lang, method, params));
             } catch (err) {
-                return errorResult(`lsp error: ${(err as Error).message}`);
+                return toolError('lsp', err);
             }
         }
     );
+
+    // ---- call hierarchy (gated) ---------------------------------------------
+
+    const hasCallHierarchy = router.servers.some(
+        (s) => s.manifest.capabilities?.callHierarchy === true
+    );
+    if (hasCallHierarchy) {
+        server.registerTool(
+            'call_hierarchy_prepare',
+            {
+                description:
+                    'Prepare call-hierarchy items at the given position. Pass a returned item to ' +
+                    'incoming_calls or outgoing_calls to explore the graph.',
+                inputSchema: { file: FileUriSchema, pos: PositionSchema },
+            },
+            async ({ file, pos }) => {
+                try {
+                    return jsonResult(await router.prepareCallHierarchy(file, pos));
+                } catch (err) {
+                    return toolError('call_hierarchy_prepare', err);
+                }
+            }
+        );
+
+        server.registerTool(
+            'incoming_calls',
+            {
+                description: 'Return all callers of the given call-hierarchy item.',
+                inputSchema: {
+                    item: z
+                        .record(z.any())
+                        .describe('A CallHierarchyItem from call_hierarchy_prepare'),
+                },
+            },
+            async ({ item }) => {
+                try {
+                    return jsonResult(await router.incomingCalls(item));
+                } catch (err) {
+                    return toolError('incoming_calls', err);
+                }
+            }
+        );
+
+        server.registerTool(
+            'outgoing_calls',
+            {
+                description: 'Return all callees of the given call-hierarchy item.',
+                inputSchema: {
+                    item: z
+                        .record(z.any())
+                        .describe('A CallHierarchyItem from call_hierarchy_prepare'),
+                },
+            },
+            async ({ item }) => {
+                try {
+                    return jsonResult(await router.outgoingCalls(item));
+                } catch (err) {
+                    return toolError('outgoing_calls', err);
+                }
+            }
+        );
+    }
 
     return server;
 }
 
 // ---- Helpers ---------------------------------------------------------------
 
-function errorResult(message: string) {
+function jsonResult(value: unknown) {
     return {
-        content: [{ type: 'text' as const, text: message }],
+        content: [
+            {
+                type: 'text' as const,
+                text: JSON.stringify(value, null, 2),
+            },
+        ],
+    };
+}
+
+function toolError(tool: string, err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[lsp-mcp] ${tool} error: ${message}\n`);
+    return {
+        content: [{ type: 'text' as const, text: `${tool} error: ${message}` }],
         isError: true as const,
     };
 }
