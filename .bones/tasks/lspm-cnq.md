@@ -8,6 +8,7 @@ depends_on: [lspm-501]
 parent: lspm-y5n
 ---
 
+
 ## Context
 
 Parent epic: `lspm-y5n`, Phase 1 (no prior phase).
@@ -24,9 +25,11 @@ Out of Phase 1 (→ Phase 2, `lspm-erd`): fork wrappers, `.local.md` settings, `
 
 ## Success Criteria
 
-- [ ] `.claude-plugin/marketplace.json` exists at repo root and validates against the CC marketplace schema.
-- [ ] `plugins/lsp-mcp/.claude-plugin/plugin.json` + `plugins/lsp-mcp/.mcp.json` exist; `.mcp.json` path resolution to repo `dist/index.js` is empirically verified under CC marketplace install (or fallback path applied — see Key Considerations).
-- [ ] `plugins/lsp-mcp/manifests/` contains a JSON manifest for each of: pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, lua-language-server, elixir-ls, svelte-language-server, bash-language-server, starpls, bazel-lsp.
+> **Layout note (2026-04-17, post-`lspm-501`):** Repo refactored to **root-as-plugin** — `.claude-plugin/plugin.json` lives at repo root with `mcpServers` inlined (no separate `.mcp.json`); `manifests/` and `skills/using-lsp-mcp/` sit at repo root; no `plugins/lsp-mcp/` subtree exists. Criteria below reflect the refactored layout.
+
+- [x] `.claude-plugin/marketplace.json` exists at repo root and validates against the CC marketplace schema. *(satisfied by `lspm-501`; schema accepts `source: "./"` and plugin installs cleanly)*
+- [x] `.claude-plugin/plugin.json` exists at repo root with `mcpServers` inlined (path: `${CLAUDE_PLUGIN_ROOT}/dist/index.js`); path resolution empirically verified under CC marketplace install. *(satisfied by `lspm-501` commit 633ea50 — `/mcp` shows `lsp` connected; MCP tool calls route successfully)*
+- [ ] `manifests/` (at repo root) contains a JSON manifest for each of: pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, lua-language-server, elixir-ls, svelte-language-server, bash-language-server, starpls, bazel-lsp.
 - [ ] Router routing model is `Map<langId, { candidates: ManifestEntry[], primary: string }>`; 1:1 hardcoding removed from all tool handlers.
 - [ ] PATH probe at startup sets `status: "ok" | "binary_not_found"` per manifest; only `ok` manifests join the routing map; all are visible to `list_languages`.
 - [ ] `list_languages` MCP tool returns `{lang, manifest, primary: bool, status, capabilities}[]`.
@@ -35,7 +38,7 @@ Out of Phase 1 (→ Phase 2, `lspm-erd`): fork wrappers, `.local.md` settings, `
 - [ ] `manifests?` param threaded through `symbol_search`; default fans across primaries only; explicit list scopes to named manifests.
 - [ ] MCP tool input schemas built dynamically at startup; `lang` / `langs` / `via` / `manifests` parameters expose enum values reflecting currently-active manifests.
 - [ ] Layered manifest discovery: built-in defaults dir + `$CLAUDE_PLUGIN_ROOT` glob + `LSP_MCP_CONFIG` file + `LSP_MCP_MANIFESTS_DIR` all merge; later source wins on name collision; conflict logged to stderr.
-- [ ] `plugins/lsp-mcp/skills/using-lsp-mcp/SKILL.md` ships with third-person description, specific trigger phrases for polyglot / symbol lookup / cross-language refactor queries, imperative body, concrete examples for Python↔Rust (pyo3), TS↔Go (gRPC), and C embedded in anything. No position-counting from text in examples.
+- [ ] `skills/using-lsp-mcp/SKILL.md` (at repo root) ships with third-person description, specific trigger phrases for polyglot / symbol lookup / cross-language refactor queries, imperative body, concrete examples for Python↔Rust (pyo3), TS↔Go (gRPC), and C embedded in anything. No position-counting from text in examples.
 - [ ] `bun run test` passes: existing tests + new tests covering multi-candidate routing, PATH probe, `list_languages` shape, `set_primary`, layered discovery merge + dedupe + conflict-logging.
 - [ ] Router with zero env vars, no `$CLAUDE_PLUGIN_ROOT` set, stdio transport: loads built-in defaults, PATH-probes, serves queries — smoke-tested via stdio echo.
 - [ ] Fresh CC session with plugin installed: `/mcp` shows `lsp` server connected; `list_languages` reports whichever defaults match the box's installed LSPs; `symbol_search` on a real polyglot repo returns cross-language hits.
@@ -51,9 +54,9 @@ Inherited from parent epic — see `.bones/tasks/lspm-y5n.md`. Phase-1-specific 
 
 ## Key Considerations
 
-- **`${CLAUDE_PLUGIN_ROOT}` path resolution**: The `.mcp.json` in `plugins/lsp-mcp/` needs to resolve to repo-root `dist/index.js`. Empirical check: install the plugin locally in a CC session, observe whether the cache preserves repo layout or only copies the plugin subtree. If the plugin subtree is copied in isolation, `../../dist/` escapes the cache. Fallback: place a copy of `dist/` inside `plugins/lsp-mcp/dist/` via a bun script invoked before commit, and point `.mcp.json` at `${CLAUDE_PLUGIN_ROOT}/dist/index.js`. First task (`lspm-501`) resolves this.
+- **`${CLAUDE_PLUGIN_ROOT}` path resolution — RESOLVED in `lspm-501`.** Primary attempt (`${CLAUDE_PLUGIN_ROOT}/../../dist/`) failed because CC caches only the plugin subtree, escaping `../../`. Fallback considered (copy of `dist/` into plugin dir) also failed because the bundler didn't inline deps. Final outcome: root-as-plugin layout with `mcpServers` inlined into `.claude-plugin/plugin.json` (not a separate top-level `.mcp.json` — that form does not bind `${CLAUDE_PLUGIN_ROOT}`) and a single bundled `dist/index.js` with all deps inlined via `bun build`. `${CLAUDE_PLUGIN_ROOT}` now resolves to the repo root itself; downstream tasks must reference this layout.
 - **Bazel lang ID coherence**: `starpls` and `bazel-lsp` may declare different LSP language IDs (`starlark`, `bzl`, `bazel`). Multi-candidate routing requires a shared canonical langId in both manifests so they register as candidates for the same lang. Bazel manifest task must verify the LSPs' actual language IDs and set `langIds` accordingly — or introduce a per-manifest langId normalization step.
-- **Built-in defaults dir path**: Discovery must locate defaults in both CC and non-CC environments. Resolve relative to `dist/index.js`'s own `__dirname` (via `fileURLToPath(import.meta.url)` or `path.dirname(module.filename)` depending on ESM/CJS), then walk to `../plugins/lsp-mcp/manifests/`. Do NOT use `process.cwd()` — CC invokes the server from arbitrary working directories.
+- **Built-in defaults dir path**: Discovery must locate defaults in both CC and non-CC environments. Resolve relative to `dist/index.js`'s own `__dirname` (via `fileURLToPath(import.meta.url)`), then walk to `../manifests/` (sibling of `dist/` at repo root, per root-as-plugin layout). Do NOT use `process.cwd()` — CC invokes the server from arbitrary working directories.
 - **LSP server process multiplication**: N candidates per lang = N processes when all active. Lazy spawn (current `LspServer` behavior) keeps dormant candidates at zero cost. Active A/B doubles memory for one language; acceptable.
 - **Tool-schema enum liveness**: MCP protocol expects tool schemas known at tool-list time. Rebuilding on every tool call is out of spec; built-at-startup is the contract. `set_primary` changes the default primary, not enum values — schema stays valid.
 - **Manifest source-tagging**: `ManifestEntry.sourceKind: "builtin" | "plugin-tree" | "config-file" | "manifests-dir"` threaded through the discovery pipeline so Phase 2 settings can reason about origin when applying overrides.
@@ -63,7 +66,7 @@ Inherited from parent epic — see `.bones/tasks/lspm-y5n.md`. Phase-1-specific 
 
 **Agent Documentation:** Update stale docs only — don't generate summaries or tutorials.
 - [ ] `README.md`: update Installation section (marketplace install), Tool Surface section (add `list_languages` / `set_primary` / `via` / `manifests`), Configuration section (add `LSP_MCP_MANIFESTS_DIR` + layered discovery), MCP client config example (marketplace-install path).
-- [ ] `plugins/lsp-mcp/skills/using-lsp-mcp/SKILL.md` ships as new content (R9); not a stale-doc update but a Phase 1 deliverable.
+- [ ] `skills/using-lsp-mcp/SKILL.md` ships as new content (R9); not a stale-doc update but a Phase 1 deliverable.
 
 **User Demo:** Polyglot symbol trace in a real CC session.
 - Fresh CC session. Marketplace added; `/plugin install lsp-mcp`; MCP server connects.
@@ -73,3 +76,7 @@ Inherited from parent epic — see `.bones/tasks/lspm-y5n.md`. Phase-1-specific 
 - Demonstrate `via`: call `defs` with explicit `via: "<manifest-name>"` pinning the query to one specific server.
 - Demonstrate `set_primary`: if bazel is in-scope on the demo box, show two candidates (`starpls`, `bazel-lsp`) in `list_languages`, swap primary with `set_primary`, verify the change on the next `list_languages`.
 - Error path: a `binary_not_found` lang appears in `list_languages`; `symbol_search(langs: ["<that lang>"])` returns an empty result set with an informative message, not a hard error.
+
+## Log
+
+- [2026-04-17T20:37:21Z] [Seth] Skeleton freshness update (2026-04-17): rewrote paths and Key Considerations to reflect root-as-plugin layout adopted by lspm-501. SC #1 and #2 marked done (satisfied by lspm-501 empirical verify at commit 633ea50). SC #3, #12 path-prefixes rewritten (manifests/, skills/). 'Built-in defaults dir path' Key Consideration rewritten to point at ../manifests/ relative to dist/. Parent epic lspm-y5n has matching stale paths (Architecture diagram, R8 bullet 1, Seam Contracts, Design Discovery) — flagged here, NOT edited this round per user scope (option 1 covered Phase 1 only). Next task: R4 multi-candidate routing refactor.
