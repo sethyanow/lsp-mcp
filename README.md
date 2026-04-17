@@ -32,6 +32,9 @@ Each LSP server is described by a **plugin manifest** (see below). `lsp-mcp` spa
 | `outline(file)` | Document symbols. |
 | `diagnostics(file)` | Errors / warnings. |
 | `lsp(lang, method, params)` | Raw passthrough — escape hatch for anything not covered above. |
+| `call_hierarchy_prepare(file, pos)` | Gated on `capabilities.callHierarchy`. Returns `CallHierarchyItem`s at the position. |
+| `incoming_calls(item)` | Callers of a call-hierarchy item. |
+| `outgoing_calls(item)` | Callees of a call-hierarchy item. |
 
 ## Configuration
 
@@ -64,12 +67,15 @@ Create a config file (default: `lsp-mcp.config.json` in the working directory) c
 | `name` | Unique plugin identifier. |
 | `langIds` | LSP language IDs handled by this server (used for routing). |
 | `fileGlobs` | Glob patterns that identify files owned by this server. |
-| `workspaceMarkers` | File/directory names that mark a project root (for monorepo detection). |
-| `server.cmd` | Command array to spawn the LSP server. `${pluginDir}` is expanded to the plugin name. |
-| `server.buildHook` | Optional shell script to run on first use (build-on-first-run for cloud envs). |
+| `workspaceMarkers` | File/directory names that mark a project root. lsp-mcp walks up from `LSP_MCP_ROOT` to find the nearest directory containing any marker and uses that as the server's `rootUri`. Empty array → use `LSP_MCP_ROOT` verbatim. |
+| `server.cmd` | Command array to spawn the LSP server. `${pluginDir}` expands to `$LSP_MCP_PLUGINS_DIR/<manifest.name>`. |
+| `server.buildHook` | Optional shell command run **once per process** before the first spawn. Executed with `cwd=pluginDir` (if it exists) and `LSP_MCP_PLUGIN_DIR` in the env. Non-zero exit aborts startup. |
 | `server.initOptions` | Passed as LSP `initializationOptions`. |
 | `capabilities.workspaceSymbol.stringPrefilter` | `true` if the server handles string-prefilter-before-bind internally. `false` means the outer layer should pre-filter candidate files before dispatch. |
-| `capabilities.workspaceSymbol.timeoutMs` | Per-server timeout for workspace/symbol queries. |
+| `capabilities.workspaceSymbol.timeoutMs` | Per-server timeout for workspace/symbol queries (default 10 000 ms). |
+| `capabilities.implementations.stringPrefilter` | Same contract as above, for `textDocument/implementation`. If `false`, lsp-mcp emits a startup warning — outer-layer prefilter is not yet implemented. |
+| `capabilities.callHierarchy` | `true` to register the `call_hierarchy_prepare` / `incoming_calls` / `outgoing_calls` tools. Omit when no server supports LSP call hierarchy. |
+| `capabilities.didOpenDelayMs` | Milliseconds to wait after `textDocument/didOpen` before dispatching the first request on a file (default 100). Raise for slow-warming servers. |
 
 ## Usage
 
@@ -92,7 +98,8 @@ LSP_MCP_CONFIG=/path/to/config.json LSP_MCP_ROOT=/path/to/workspace node dist/in
 | Variable | Default | Description |
 |---|---|---|
 | `LSP_MCP_CONFIG` | `./lsp-mcp.config.json` | Path to the plugin configuration file. |
-| `LSP_MCP_ROOT` | `process.cwd()` | Workspace root passed to each LSP server. |
+| `LSP_MCP_ROOT` | `process.cwd()` | Workspace root — the start point for `workspaceMarkers` walk-up. |
+| `LSP_MCP_PLUGINS_DIR` | `<dirname(LSP_MCP_CONFIG)>/plugins` | Base directory for `${pluginDir}` expansion and `buildHook` cwd. Each plugin's assets live at `$LSP_MCP_PLUGINS_DIR/<manifest.name>/`. |
 
 ### MCP client configuration (Claude Code example)
 

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'url';
 import type { LspServer } from './lsp-server.js';
 import type { DiagnosticInfo, Location, SymbolInfo } from './types.js';
 
@@ -56,10 +57,19 @@ export class Router {
         const merged: SymbolInfo[] = [];
         const seen = new Set<string>();
 
-        for (const result of settled) {
-            if (result.status !== 'fulfilled') continue;
+        for (let i = 0; i < settled.length; i++) {
+            const result = settled[i];
+            if (result.status !== 'fulfilled') {
+                const reason = result.reason;
+                const message =
+                    reason instanceof Error ? reason.message : String(reason);
+                process.stderr.write(
+                    `[lsp-mcp] symbol_search on ${targets[i].manifest.name} failed: ${message}\n`
+                );
+                continue;
+            }
             for (const sym of result.value) {
-                const key = dedupeKey(sym.location);
+                const key = dedupeKey(sym);
                 if (!seen.has(key)) {
                     seen.add(key);
                     merged.push(sym);
@@ -134,24 +144,40 @@ export class Router {
         const server = this._serverForUri(fileUri);
         if (!server) return [];
 
-        const langId = langIdFromUri(fileUri, server);
-        const justOpened = await server.openDocument(fileUri, langId);
-        // LSP diagnostics are push-based (publishDiagnostics notification).
-        // We approximate them via textDocument/diagnostic if the server supports it.
-        // Apply the same post-open settle pause used by _fileRequest.
-        if (justOpened) {
-            const delay = Number(server.manifest.capabilities?.didOpenDelayMs) || 100;
-            await new Promise((r) => setTimeout(r, delay));
-        }
-        try {
-            const result = await server.request('textDocument/diagnostic', {
-                textDocument: { uri: fileUri },
-            });
-            const report = result as { items?: DiagnosticInfo[] } | null;
-            return report?.items ?? [];
-        } catch {
-            return [];
-        }
+        await this._openWithPause(server, fileUri);
+        const result = await server.request('textDocument/diagnostic', {
+            textDocument: { uri: fileUri },
+        });
+        const report = result as { items?: DiagnosticInfo[] } | null;
+        return report?.items ?? [];
+    }
+
+    async prepareCallHierarchy(
+        fileUri: string,
+        position: LspPosition
+    ): Promise<unknown[]> {
+        return this._fileRequest<unknown[]>(
+            fileUri,
+            'textDocument/prepareCallHierarchy',
+            buildTextDocParams(fileUri, position),
+            []
+        );
+    }
+
+    async incomingCalls(item: unknown): Promise<unknown[]> {
+        const server = this._serverForCallHierarchyItem(item);
+        if (!server) return [];
+        await server.ensureRunning();
+        const result = await server.request('callHierarchy/incomingCalls', { item });
+        return Array.isArray(result) ? result : [];
+    }
+
+    async outgoingCalls(item: unknown): Promise<unknown[]> {
+        const server = this._serverForCallHierarchyItem(item);
+        if (!server) return [];
+        await server.ensureRunning();
+        const result = await server.request('callHierarchy/outgoingCalls', { item });
+        return Array.isArray(result) ? result : [];
     }
 
     /** Raw passthrough: route to server owning `lang`, forward method+params. */
@@ -164,7 +190,7 @@ export class Router {
         if (!server) {
             throw new Error(`No server configured for language: ${lang}`);
         }
-        return server.request(method, params as Record<string, unknown>);
+        return server.request(method, params);
     }
 
     // ---- Lifecycle ----------------------------------------------------------
@@ -173,13 +199,36 @@ export class Router {
         await Promise.allSettled(this._servers.map((s) => s.shutdown()));
     }
 
+    forceKillAll(): void {
+        for (const s of this._servers) s.forceKill();
+    }
+
     // ---- Internals ----------------------------------------------------------
 
     private _serverForUri(uri: string): LspServer | undefined {
-        const filePath = uri.startsWith('file://')
-            ? decodeURIComponent(new URL(uri).pathname)
-            : uri;
+        let filePath = uri;
+        if (uri.startsWith('file://')) {
+            try {
+                filePath = fileURLToPath(uri);
+            } catch {
+                return undefined;
+            }
+        }
         return this.serverForFile(filePath);
+    }
+
+    private _serverForCallHierarchyItem(item: unknown): LspServer | undefined {
+        const uri = (item as { uri?: string } | null)?.uri;
+        if (typeof uri !== 'string') return undefined;
+        return this._serverForUri(uri);
+    }
+
+    private async _openWithPause(server: LspServer, fileUri: string): Promise<void> {
+        const justOpened = await server.openDocument(fileUri, server.defaultLangId);
+        if (justOpened) {
+            const delay = Number(server.manifest.capabilities?.didOpenDelayMs) || 100;
+            await new Promise((r) => setTimeout(r, delay));
+        }
     }
 
     private async _fileRequest<T>(
@@ -191,23 +240,9 @@ export class Router {
         const server = this._serverForUri(fileUri);
         if (!server) return fallback;
 
-        const langId = langIdFromUri(fileUri, server);
-        const justOpened = await server.openDocument(fileUri, langId);
-        // Give the server a short window to process the didOpen notification before
-        // dispatching the actual request.  Without this pause some servers (e.g. Pyright)
-        // return stale results because the document hasn't been parsed yet.
-        // Only needed on the first open — subsequent requests on the same URI skip the wait.
-        if (justOpened) {
-            const delay = Number(server.manifest.capabilities?.didOpenDelayMs) || 100;
-            await new Promise((r) => setTimeout(r, delay));
-        }
-
-        try {
-            const result = await server.request(method, params);
-            return (result ?? fallback) as T;
-        } catch {
-            return fallback;
-        }
+        await this._openWithPause(server, fileUri);
+        const result = await server.request(method, params);
+        return (result ?? fallback) as T;
     }
 }
 
@@ -225,10 +260,19 @@ function buildTextDocParams(
     return { textDocument: { uri }, position };
 }
 
-function dedupeKey(loc: Location): string {
-    return `${loc.uri}:${loc.range.start.line}:${loc.range.start.character}:${loc.range.end.line}:${loc.range.end.character}`;
-}
-
-function langIdFromUri(uri: string, server: LspServer): string {
-    return server.manifest.langIds[0] ?? 'plaintext';
+function dedupeKey(sym: SymbolInfo): string {
+    const r = sym.location.range;
+    // Include name/kind/containerName so multiple symbols from the same file
+    // without ranges (e.g. WorkspaceSymbol entries normalized to zero-range)
+    // don't collapse into a single entry.
+    return [
+        sym.location.uri,
+        r.start.line,
+        r.start.character,
+        r.end.line,
+        r.end.character,
+        sym.kind,
+        sym.name,
+        sym.containerName ?? '',
+    ].join(':');
 }

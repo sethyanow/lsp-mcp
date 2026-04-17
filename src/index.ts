@@ -5,27 +5,14 @@
  * Reads a plugin configuration file and starts the MCP server.
  *
  * Configuration:
- *   LSP_MCP_CONFIG   Path to a JSON config file listing plugin manifests.
- *                    Defaults to ./lsp-mcp.config.json.
- *   LSP_MCP_ROOT     Workspace root to pass to each LSP server.
- *                    Defaults to process.cwd().
- *
- * Config file format (array of PluginManifest objects):
- *   [
- *     {
- *       "name": "pyright",
- *       "version": "0.1.0",
- *       "langIds": ["python"],
- *       "fileGlobs": ["**\/*.py", "**\/*.pyi"],
- *       "workspaceMarkers": ["pyrightconfig.json", "pyproject.toml"],
- *       "server": {
- *         "cmd": ["node", "/path/to/pyright-langserver.js", "--stdio"]
- *       },
- *       "capabilities": {
- *         "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 10000 }
- *       }
- *     }
- *   ]
+ *   LSP_MCP_CONFIG        Path to a JSON config file listing plugin manifests.
+ *                         Defaults to ./lsp-mcp.config.json.
+ *   LSP_MCP_ROOT          Workspace root passed to each LSP server.
+ *                         Defaults to process.cwd().
+ *   LSP_MCP_PLUGINS_DIR   Directory containing per-plugin asset dirs.
+ *                         ${pluginDir} in cmd/buildHook expands to
+ *                         "$LSP_MCP_PLUGINS_DIR/<manifest.name>".
+ *                         Defaults to "<dirname(LSP_MCP_CONFIG)>/plugins".
  */
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
@@ -33,11 +20,20 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { LspServer } from './lsp-server.js';
 import { Router } from './router.js';
 import { createMcpServer } from './mcp-server.js';
+import { PluginManifestSchema } from './types.js';
 import type { PluginManifest } from './types.js';
+import { z } from 'zod';
+
+const SHUTDOWN_TIMEOUT_MS = 5_000;
 
 async function main(): Promise<void> {
-    const configPath = process.env.LSP_MCP_CONFIG ?? path.join(process.cwd(), 'lsp-mcp.config.json');
-    const workspaceRoot = process.env.LSP_MCP_ROOT ?? process.cwd();
+    const configPath = path.resolve(
+        process.env.LSP_MCP_CONFIG ?? path.join(process.cwd(), 'lsp-mcp.config.json'),
+    );
+    const workspaceRoot = path.resolve(process.env.LSP_MCP_ROOT ?? process.cwd());
+    const pluginsDir = path.resolve(
+        process.env.LSP_MCP_PLUGINS_DIR ?? path.join(path.dirname(configPath), 'plugins'),
+    );
 
     if (!existsSync(configPath)) {
         process.stderr.write(
@@ -47,51 +43,36 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    let manifests: PluginManifest[];
-    try {
-        const raw = readFileSync(configPath, 'utf-8');
-        manifests = JSON.parse(raw) as PluginManifest[];
+    const manifests = loadManifests(configPath);
 
-        // Validate that manifests is an array
-        if (!Array.isArray(manifests)) {
+    for (const m of manifests) {
+        if (m.capabilities?.implementations?.stringPrefilter === false) {
             process.stderr.write(
-                `lsp-mcp: config file ${configPath} must contain an array of PluginManifest objects, got ${typeof manifests}\n`
+                `[lsp-mcp] warning: impls on "${m.name}" may time out on cold cache — ` +
+                    `outer-layer prefilter is not yet implemented.\n`
             );
-            process.exit(1);
         }
-
-        // Validate that each entry has required properties
-        for (let i = 0; i < manifests.length; i++) {
-            const m = manifests[i];
-            if (!m || typeof m !== 'object') {
-                process.stderr.write(
-                    `lsp-mcp: config file ${configPath}: entry at index ${i} is not an object\n`
-                );
-                process.exit(1);
-            }
-            const required = ['name', 'langIds', 'fileGlobs', 'server', 'capabilities'];
-            for (const key of required) {
-                if (!(key in m)) {
-                    process.stderr.write(
-                        `lsp-mcp: config file ${configPath}: entry at index ${i} (${m.name || 'unnamed'}) missing required property: ${key}\n`
-                    );
-                    process.exit(1);
-                }
-            }
-        }
-    } catch (err) {
-        process.stderr.write(`lsp-mcp: failed to parse config: ${(err as Error).message}\n`);
-        process.exit(1);
     }
 
-    const servers = manifests.map((m) => new LspServer(m, workspaceRoot));
+    const servers = manifests.map((m) => new LspServer(m, workspaceRoot, pluginsDir));
     const router = new Router(servers);
     const mcpServer = createMcpServer(router);
 
-    // Graceful shutdown
+    let shuttingDown = false;
     const doShutdown = async () => {
-        await router.shutdownAll();
-        process.exit(0);
+        if (shuttingDown) return;
+        shuttingDown = true;
+        const timer = setTimeout(() => {
+            process.stderr.write(`[lsp-mcp] shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms; force-killing\n`);
+            router.forceKillAll();
+            process.exit(0);
+        }, SHUTDOWN_TIMEOUT_MS);
+        try {
+            await router.shutdownAll();
+        } finally {
+            clearTimeout(timer);
+            process.exit(0);
+        }
     };
     process.on('SIGTERM', doShutdown);
     process.on('SIGINT', doShutdown);
@@ -99,6 +80,38 @@ async function main(): Promise<void> {
 
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
+}
+
+function loadManifests(configPath: string): PluginManifest[] {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+        process.stderr.write(`lsp-mcp: failed to parse config: ${(err as Error).message}\n`);
+        process.exit(1);
+    }
+
+    if (!Array.isArray(raw)) {
+        process.stderr.write(
+            `lsp-mcp: config ${configPath} must be a JSON array of PluginManifest objects\n`
+        );
+        process.exit(1);
+    }
+
+    const parsed = z.array(PluginManifestSchema).safeParse(raw);
+    if (!parsed.success) {
+        process.stderr.write(
+            `lsp-mcp: invalid config ${configPath}:\n${formatZodError(parsed.error)}\n`
+        );
+        process.exit(1);
+    }
+    return parsed.data;
+}
+
+function formatZodError(err: z.ZodError): string {
+    return err.issues
+        .map((i) => `  - ${i.path.join('.') || '<root>'}: ${i.message}`)
+        .join('\n');
 }
 
 main().catch((err) => {
