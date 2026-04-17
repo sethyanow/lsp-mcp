@@ -4,5 +4,11 @@
   "description": "Meta-LSP MCP router: polyglot workspace/symbol for agents",
   "author": {
     "name": "Seth Yanow"
+  },
+  "mcpServers": {
+    "lsp": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"]
+    }
   }
 }
