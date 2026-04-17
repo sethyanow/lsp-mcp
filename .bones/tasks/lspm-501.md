@@ -1,11 +1,12 @@
 ---
 id: lspm-501
 title: Scaffold marketplace + core plugin; verify CLAUDE_PLUGIN_ROOT path resolution
-status: active
+status: closed
 type: task
 priority: 1
 parent: lspm-cnq
 ---
+
 
 
 
