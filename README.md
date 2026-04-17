@@ -36,6 +36,20 @@ Each LSP server is described by a **plugin manifest** (see below). `lsp-mcp` spa
 | `incoming_calls(item)` | Callers of a call-hierarchy item. |
 | `outgoing_calls(item)` | Callees of a call-hierarchy item. |
 
+## Installation
+
+In Claude Code (recommended):
+
+    /plugin marketplace add https://github.com/sethyanow/lsp-mcp
+    /plugin install lsp-mcp
+
+Or from a local checkout:
+
+    /plugin marketplace add /path/to/lsp-mcp
+    /plugin install lsp-mcp
+
+The plugin auto-configures MCP; verify with `/mcp` — you should see an `lsp` server connected. See [Configuration](#configuration) for manifest authoring and [Usage (non-Claude-Code)](#usage-non-claude-code) for standalone / other-client setups.
+
 ## Configuration
 
 Create a config file (default: `lsp-mcp.config.json` in the working directory) containing an array of plugin manifests:
@@ -77,14 +91,14 @@ Create a config file (default: `lsp-mcp.config.json` in the working directory) c
 | `capabilities.callHierarchy` | `true` to register the `call_hierarchy_prepare` / `incoming_calls` / `outgoing_calls` tools. Omit when no server supports LSP call hierarchy. |
 | `capabilities.didOpenDelayMs` | Milliseconds to wait after `textDocument/didOpen` before dispatching the first request on a file (default 100). Raise for slow-warming servers. |
 
-## Usage
+## Usage (non-Claude-Code)
+
+For MCP clients that don't support Claude Code's plugin marketplace, or for a hand-configured setup:
 
 ```bash
-# Install
-npm install
-
-# Build
-npm run build
+# Install deps + build
+bun install
+bun run build
 
 # Run (config auto-discovered from ./lsp-mcp.config.json)
 node dist/index.js
@@ -101,7 +115,9 @@ LSP_MCP_CONFIG=/path/to/config.json LSP_MCP_ROOT=/path/to/workspace node dist/in
 | `LSP_MCP_ROOT` | `process.cwd()` | Workspace root — the start point for `workspaceMarkers` walk-up. |
 | `LSP_MCP_PLUGINS_DIR` | `<dirname(LSP_MCP_CONFIG)>/plugins` | Base directory for `${pluginDir}` expansion and `buildHook` cwd. Each plugin's assets live at `$LSP_MCP_PLUGINS_DIR/<manifest.name>/`. |
 
-### MCP client configuration (Claude Code example)
+### MCP client configuration (manual setup)
+
+For MCP clients other than Claude Code, or for a hand-configured setup that bypasses the plugin marketplace, add the following to your MCP client config:
 
 ```json
 {

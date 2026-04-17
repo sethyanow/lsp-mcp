@@ -1,0 +1,13 @@
+{
+  "name": "lsp-mcp",
+  "owner": {
+    "name": "Seth Yanow"
+  },
+  "plugins": [
+    {
+      "name": "lsp-mcp",
+      "source": "./plugins/lsp-mcp",
+      "description": "Meta-LSP MCP router: polyglot workspace/symbol for agents"
+    }
+  ]
+}

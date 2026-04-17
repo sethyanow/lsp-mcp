@@ -1,0 +1,8 @@
+{
+  "name": "lsp-mcp",
+  "version": "0.1.0",
+  "description": "Meta-LSP MCP router: polyglot workspace/symbol for agents",
+  "author": {
+    "name": "Seth Yanow"
+  }
+}

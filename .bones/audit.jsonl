@@ -31,3 +31,4 @@
 {"timestamp":"2026-04-17T10:24:39.060600+00:00","actor":"Seth","event_type":"dep_added","task_id":"lspm-erd","details":{"kind":"blocks","to":"lspm-cnq"}}
 {"timestamp":"2026-04-17T10:24:39.073208+00:00","actor":"Seth","event_type":"dep_added","task_id":"lspm-cnq","details":{"kind":"parent-child","to":"lspm-501"}}
 {"timestamp":"2026-04-17T10:24:39.073582+00:00","actor":"Seth","event_type":"dep_added","task_id":"lspm-cnq","details":{"kind":"blocks","to":"lspm-501"}}
+{"timestamp":"2026-04-17T11:57:09.911206+00:00","actor":"Seth","event_type":"updated","task_id":"lspm-501","details":{"status":"active"}}

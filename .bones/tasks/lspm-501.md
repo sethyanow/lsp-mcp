@@ -1,11 +1,12 @@
 ---
 id: lspm-501
 title: Scaffold marketplace + core plugin; verify CLAUDE_PLUGIN_ROOT path resolution
-status: open
+status: active
 type: task
 priority: 1
 parent: lspm-cnq
 ---
+
 
 ## Context
 
@@ -20,6 +21,7 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 - Scaffold `.claude-plugin/marketplace.json` at repo root listing one plugin (`lsp-mcp`).
 - Scaffold `plugins/lsp-mcp/.claude-plugin/plugin.json` with name, version, description, author.
 - Scaffold `plugins/lsp-mcp/.mcp.json` invoking `node ${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` (primary path attempt) OR `node ${CLAUDE_PLUGIN_ROOT}/dist/index.js` (fallback path — see Implementation step 3).
+- Scaffold placeholder `plugins/lsp-mcp/skills/using-lsp-mcp/SKILL.md` — real content in a later task (see Implementation step 4 + Anti-Patterns).
 - Ensure `dist/` is built and committed (update `.gitignore` if it currently excludes `dist/`; commit the build output).
 - Verify empirically: `/plugin marketplace add <local-path>` followed by `/plugin install lsp-mcp` in a real Claude Code session produces a connected MCP server on `/mcp`. If primary path fails, apply fallback per step 3 and re-verify.
 - Update `README.md` Installation section to document marketplace install flow.
@@ -30,8 +32,9 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 1. **Build and commit `dist/`.**
    - `bun install` (if `node_modules/` is stale).
    - `bun run build` (invokes the `build` script from `package.json` — tsc).
-   - Edit `.gitignore`: remove `dist/` if present, or add a `!dist/` exception.
-   - `git add dist/` and confirm it's staged.
+   - Edit `.gitignore`: the current file has a bare `dist` line under the `# Nuxt.js build / generate output` section (around line 72 — `.nuxt` followed by `dist`). **Delete that `dist` line.** (A `!dist/` exception alone won't work — the pattern is `dist` without a trailing slash, which matches files and dirs; the Git docs specify that a negation for a file excluded by its parent directory's pattern won't re-include it.) Leave `.nuxt` intact.
+   - `tsconfig.json` has `"exclude": ["node_modules", "dist", ...]` — no change needed; tsc still writes to `outDir: "./dist"`.
+   - `git add dist/` and confirm it's staged. Expected contents: compiled `.js` + `.js.map` + `.d.ts` files mirroring `src/` tree.
 
 2. **Scaffold marketplace and core plugin (primary path attempt).**
    - `.claude-plugin/marketplace.json`:
@@ -92,25 +95,15 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
    - Do not claim this skill is complete. Epic R9 is explicitly a later task.
 
 5. **README install section update.**
-   - Replace the current `Installation` / `Usage` / `MCP client configuration` sections with a marketplace-install path:
-     ```markdown
-     ## Installation
-
-     In Claude Code:
-
-     ```
-     /plugin marketplace add https://github.com/sethyanow/lsp-mcp
-     /plugin install lsp-mcp
-     ```
-
-     Or for local dev:
-
-     ```
-     /plugin marketplace add /path/to/lsp-mcp
-     /plugin install lsp-mcp
-     ```
-     ```
-   - Keep the `LSP_MCP_CONFIG` / `LSP_MCP_ROOT` / `LSP_MCP_PLUGINS_DIR` env-var reference section; that remains the non-CC path.
+   - Current README structure (verified): `# lsp-mcp` → `## Problem` → `## Architecture` → `## Tool Surface` → `## Configuration` (manifest fields) → `## Usage` (npm install/build + run commands, env vars table, MCP client config example) → `## Development` → `## Cold-cache discipline` → `## Related`. **There is no `## Installation` section currently.**
+   - Edits:
+     - **Insert a new `## Installation` section** (after `## Tool Surface`, before `## Configuration`) covering the CC marketplace path. Use indented code blocks (4-space indent) rather than nested fenced code to avoid fence conflicts — or use `~~~` for the outer fence and ` ``` ` for the inner commands. Content:
+       - Intro sentence: "In Claude Code (recommended):"
+       - Commands shown as shell-style code: `/plugin marketplace add https://github.com/sethyanow/lsp-mcp` then `/plugin install lsp-mcp`
+       - Second para: "Or from a local checkout:" + `/plugin marketplace add /path/to/lsp-mcp` + `/plugin install lsp-mcp`
+       - Closing sentence: "The plugin auto-configures MCP; verify with `/mcp` — you should see an `lsp` server connected."
+     - **Rewrite `## Usage`** to cover the non-CC path only. Remove the `npm install` / `npm run build` / `node dist/index.js` sequence; replace with `bun install && bun run build` and `node dist/index.js`. Keep the env vars table (`LSP_MCP_CONFIG` / `LSP_MCP_ROOT` / `LSP_MCP_PLUGINS_DIR`) unchanged — that remains the non-CC path.
+     - **Keep the `MCP client configuration (Claude Code example)` subsection under `## Usage`** but reframe it as "For MCP clients other than Claude Code, or for a hand-configured setup" — the marketplace path in `## Installation` supersedes it for CC users.
    - Do NOT yet document `LSP_MCP_MANIFESTS_DIR`, `list_languages`, `set_primary`, `via`, or `manifests` — those land in the tasks that implement them.
 
 6. **Commit discipline.**
@@ -136,7 +129,9 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 - [ ] `README.md` Installation section updated to marketplace-install path.
 - [ ] `bun run test` still passes (no router code was changed; existing tests must remain green).
 - [ ] Placeholder skill file exists at `plugins/lsp-mcp/skills/using-lsp-mcp/SKILL.md` with clear placeholder marker.
-- [ ] Single commit on the current branch staging all the above; not yet pushed.
+- [ ] Each verification attempt's changes are in a single, well-scoped commit on the current branch; not yet pushed. Primary-path commit is commit #1. If fallback is adopted, fallback changes go in commit #2 — do not amend commit #1.
+- [ ] If the fallback path was adopted: `bun run build` is chained to also run `prepare-plugin-dist` (e.g., `"build": "tsc && bun run prepare-plugin-dist"`), and the copy step cleans the destination first so stale files don't persist.
+- [ ] Pre-handoff pre-flight: agent checks `~/.claude.json` (and any project-local MCP config) for an existing MCP server named `lsp`; flags any collision in the hand-off message.
 
 ## Anti-Patterns
 
@@ -153,3 +148,50 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 - **CC cache path behavior** is the single unknown this task resolves. If the plugin subtree is copied in isolation (not the whole repo), `${CLAUDE_PLUGIN_ROOT}/../../dist/` escapes the cache. The fallback of copying `dist/` into the plugin dir sidesteps this. Bias toward empirical results over convention.
 - **`prepare-plugin-dist` script is for repo maintainers, not end users.** CC plugin cache does not run arbitrary scripts at install time. The committed copy of `dist/` inside `plugins/lsp-mcp/` is what CC caches and serves. The script's job is keeping the two `dist/` copies in sync during dev.
 - **Marketplace schema** may require additional fields (tags, categories, homepage, repository URL). Start minimal; iterate if `/plugin marketplace add` reports errors.
+- **Marketplace name and plugin name both `lsp-mcp`** is intentional (matches repo identity) and not a conflict — CC keeps marketplace and plugin registries separate. If `/plugin marketplace add` rejects the collision, rename the marketplace to `lsp-mcp-marketplace` and document the rename in the bn log.
+- **Package manager**: repo has both `package-lock.json` and `bun.lock`. Skeleton prescribes `bun`; stick with it. If `bun install` fails unexpectedly, fall back to `npm install` (the `package.json` scripts don't depend on Bun-specific features) and note the discrepancy in the bn log.
+- **Empirical verification step 3 requires a USER in a separate CC session.** This agent cannot run `/plugin marketplace add` against itself. After committing the primary-path scaffolding, the agent STOPs and hands off to the user. The user reports back with the result; agent then either closes the task (primary path won) or applies the fallback (step 3 second half) and commits again, then re-hands off.
+
+### Failure Catalog (from adversarial planning)
+
+**Temporal Betrayal: `dist/` staleness in the commit**
+- Assumption: `bun run build` produces a fresh `dist/` that reflects the current `src/`.
+- Betrayal: A prior build on a different branch or src revision can leave `dist/` populated. If the agent skips `bun run clean` and just runs `bun run build`, files that no longer have a `src/` counterpart persist in `dist/`; the commit carries orphaned compiled modules.
+- Consequence: Plugin ships with stale or orphaned code; downstream tasks debugging `dist/` pick up a ghost file.
+- Mitigation: **Run `bun run clean && bun run build` before `git add dist/`.** Not "try clean" — always. The `clean` script already exists (`shx rm -rf ./dist`); use it.
+
+**State Corruption: CC plugin cache staleness between primary and fallback attempts**
+- Assumption: After editing `plugins/lsp-mcp/.mcp.json` and re-running `/plugin install lsp-mcp`, CC serves the new `.mcp.json`.
+- Betrayal: CC's marketplace cache may serve the originally-installed plugin tree until the marketplace is refreshed or the plugin is explicitly reinstalled. A naive fallback attempt (edit `.mcp.json`, user re-runs `/plugin install`) can test against the cached primary-path version and report "still broken" even though the fallback fix is correct on disk.
+- Consequence: False negative on the fallback verification; agent keeps "fixing" a working fix; user loses trust in the verification protocol.
+- Mitigation: **The fallback protocol must explicitly `/plugin uninstall lsp-mcp`, then `/plugin marketplace update lsp-mcp` (or remove + re-add), then `/plugin install lsp-mcp` — in that order.** Document this in the hand-off message to the user, not just in the task body.
+
+**Dependency Treachery: `${CLAUDE_PLUGIN_ROOT}` interpolation contract**
+- Assumption: CC substitutes `${CLAUDE_PLUGIN_ROOT}` in `.mcp.json` `args` before launching node — i.e., the literal string becomes the cache path at launch time.
+- Betrayal: If CC only substitutes in certain fields (e.g., `command` but not `args`), or substitutes at MCP-server-config load time vs. spawn time, the literal `${CLAUDE_PLUGIN_ROOT}` is passed to node, which then runs `node ${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` — file-not-found.
+- Consequence: Indistinguishable failure mode from the primary-path-escapes-cache hypothesis we're actually trying to test. Fallback gets adopted for the wrong reason; the real bug (substitution contract) is never diagnosed.
+- Mitigation: **During hand-off, instruct the user to capture the actual MCP server error** (CC logs it; `/mcp` shows status). If the error string contains a literal `${CLAUDE_PLUGIN_ROOT}`, the substitution contract is the issue, not the cache layout. Distinguishing these two is cheap and blocks downstream misdiagnosis.
+
+**State Corruption: User's pre-existing MCP config collision**
+- Assumption: The `lsp` MCP server name defined by the plugin does not conflict with anything in the user's `~/.claude.json` or project-local MCP config.
+- Betrayal: Any prior manual config — including one left over from the current development workflow — may register an MCP server also named `lsp`. CC's resolution order between plugin-provided and user-provided MCP servers is not formally specified; the active server may silently be the wrong one.
+- Consequence: `/mcp` shows "connected" but the connection is to the wrong process; behavior looks right in isolation but diverges from what the plugin was supposed to provide.
+- Mitigation: **Agent must check `~/.claude.json` and the repo's any local MCP config for a server named `lsp` before hand-off** and flag any collision to the user. Renaming the plugin server key to `lsp-mcp` (from `lsp`) is out of scope for this task (it'd churn the skill content later); diagnosis > avoidance.
+
+**Temporal Betrayal: `dist/` drift under the fallback path**
+- Assumption: If fallback is adopted, the `prepare-plugin-dist` script keeps `dist/` and `plugins/lsp-mcp/dist/` in sync during dev.
+- Betrayal: The script is manual. A future developer runs `bun run build` without calling `bun run prepare-plugin-dist`, commits, and ships a `plugins/lsp-mcp/dist/` that reflects a prior src state.
+- Consequence: Silent drift — CC installs a `dist/` that disagrees with `src/`; bugs fixed in code appear unfixed in the plugin.
+- Mitigation: **If fallback is adopted, chain it into `build`: `"build": "tsc && bun run prepare-plugin-dist"`.** Do NOT leave `prepare-plugin-dist` as a standalone script that a dev must remember to invoke. Also: the copy step must clean the destination first (`rm -rf plugins/lsp-mcp/dist && cp -r dist plugins/lsp-mcp/dist`) so deleted src files don't leave orphans.
+
+**State Corruption: README partial rewrite**
+- Assumption: The agent edits the README incrementally; unedited sections remain coherent.
+- Betrayal: The current `## Usage` section intertwines install steps, env-var documentation, and MCP client config example. Edits in one area affect the narrative in another. A partial rewrite that touches "install" but not "MCP client config example" leaves the doc claiming two incompatible install paths without cross-reference.
+- Consequence: Reader follows both paths, gets confused, possibly ends up with a half-CC half-manual configuration.
+- Mitigation: **Read the entire README once before the edit. Do the Installation insertion + Usage rewrite + MCP client config reframing as a single atomic pass** — not three isolated Edit calls separated by other work. Re-read after to confirm narrative coherence.
+
+**Temporal Betrayal: "single commit" interacts badly with the fallback loop**
+- Assumption: The task produces one commit. The skeleton says "Single commit on the current branch staging all the above; not yet pushed."
+- Betrayal: If the primary path fails verification, the fallback requires additional changes (script + copied `dist/`). That's either a `git commit --amend` (rewriting the handed-off commit) or a second commit (violating "single commit"). The skeleton doesn't say which.
+- Consequence: Agent either amends (risking disruption if the user has already checked out the commit) or creates a second commit (violating the SC), and either way does so without explicit authorization.
+- Mitigation: **Treat "single commit" as "single commit per verification attempt."** Primary-path commit is commit #1. If fallback is needed, the fallback's changes land in commit #2 explicitly — not an amend. The final SC is re-read as "each verification attempt's changes are in a single, well-scoped commit; not yet pushed." Update SC wording accordingly.
