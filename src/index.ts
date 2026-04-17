@@ -14,15 +14,12 @@
  *                         "$LSP_MCP_PLUGINS_DIR/<manifest.name>".
  *                         Defaults to "<dirname(LSP_MCP_CONFIG)>/plugins".
  */
-import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { LspServer } from './lsp-server.js';
 import { Router } from './router.js';
 import { createMcpServer } from './mcp-server.js';
-import { PluginManifestSchema } from './types.js';
-import type { PluginManifest } from './types.js';
-import { z } from 'zod';
+import { resolveManifests } from './config.js';
 
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -35,15 +32,7 @@ async function main(): Promise<void> {
         process.env.LSP_MCP_PLUGINS_DIR ?? path.join(path.dirname(configPath), 'plugins'),
     );
 
-    if (!existsSync(configPath)) {
-        process.stderr.write(
-            `lsp-mcp: config file not found: ${configPath}\n` +
-            `Set LSP_MCP_CONFIG to the path of your plugin configuration file.\n`
-        );
-        process.exit(1);
-    }
-
-    const manifests = loadManifests(configPath);
+    const manifests = resolveManifests(configPath);
 
     for (const m of manifests) {
         if (m.capabilities?.implementations?.stringPrefilter === false) {
@@ -80,38 +69,6 @@ async function main(): Promise<void> {
 
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
-}
-
-function loadManifests(configPath: string): PluginManifest[] {
-    let raw: unknown;
-    try {
-        raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-    } catch (err) {
-        process.stderr.write(`lsp-mcp: failed to parse config: ${(err as Error).message}\n`);
-        process.exit(1);
-    }
-
-    if (!Array.isArray(raw)) {
-        process.stderr.write(
-            `lsp-mcp: config ${configPath} must be a JSON array of PluginManifest objects\n`
-        );
-        process.exit(1);
-    }
-
-    const parsed = z.array(PluginManifestSchema).safeParse(raw);
-    if (!parsed.success) {
-        process.stderr.write(
-            `lsp-mcp: invalid config ${configPath}:\n${formatZodError(parsed.error)}\n`
-        );
-        process.exit(1);
-    }
-    return parsed.data;
-}
-
-function formatZodError(err: z.ZodError): string {
-    return err.issues
-        .map((i) => `  - ${i.path.join('.') || '<root>'}: ${i.message}`)
-        .join('\n');
 }
 
 main().catch((err) => {

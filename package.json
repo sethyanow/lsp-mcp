@@ -8,9 +8,9 @@
         "lsp-mcp": "dist/index.js"
     },
     "scripts": {
-        "build": "tsc && shx rm -rf plugins/lsp-mcp/dist && shx cp -r dist plugins/lsp-mcp/dist",
-        "prepare-plugin-dist": "shx rm -rf plugins/lsp-mcp/dist && shx cp -r dist plugins/lsp-mcp/dist",
-        "clean": "shx rm -rf ./dist plugins/lsp-mcp/dist",
+        "typecheck": "tsc --noEmit",
+        "build": "bun run typecheck && bun build ./src/index.ts --outdir ./dist --target node --format cjs --sourcemap=linked",
+        "clean": "shx rm -rf ./dist",
         "test": "jest --forceExit"
     },
     "dependencies": {

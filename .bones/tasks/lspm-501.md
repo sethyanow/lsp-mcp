@@ -10,6 +10,7 @@ parent: lspm-cnq
 
 
 
+
 ## Context
 
 First task in Phase 1 sub-epic `lspm-cnq`, parent epic `lspm-y5n`.
@@ -123,8 +124,8 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 ## Success Criteria
 
 - [x] `.claude-plugin/marketplace.json` exists, valid JSON, lists the `lsp-mcp` plugin.
-- [x] `plugins/lsp-mcp/.claude-plugin/plugin.json` exists with complete manifest.
-- [x] `plugins/lsp-mcp/.mcp.json` exists pointing at `dist/index.js` via whichever path (primary or fallback) was empirically verified. *(primary committed in 46b0915, failed cache-escape check on user verify; fallback committed in commit #2 pointing at `${CLAUDE_PLUGIN_ROOT}/dist/index.js`; awaits user re-verify)*
+- [x] `plugins/lsp-mcp/.claude-plugin/plugin.json` exists with complete manifest. *(refactored 2026-04-17 commit #3: plugin.json moved to `.claude-plugin/plugin.json` at repo root; marketplace source now `.`)*
+- [x] `plugins/lsp-mcp/.mcp.json` exists pointing at `dist/index.js` via whichever path (primary or fallback) was empirically verified. *(primary committed in 46b0915, failed cache-escape; fallback committed as 4cea265, failed because deps not bundled + router-exit-on-no-config; commit #3 refactors to root-as-plugin layout + bundles via Bun + adds resolveManifests tolerance for missing config. `.mcp.json` at repo root with args: `${CLAUDE_PLUGIN_ROOT}/dist/index.js`. Awaits user re-verify.)*
 - [x] `dist/` is committed (not gitignored) and present in the working tree.
 - [ ] Empirical verification record: fresh CC session → `/plugin marketplace add <repo>` → `/plugin install lsp-mcp` → `/mcp` shows `lsp` server connected — documented via `bn log lspm-501 "..."` with which path worked.
 - [x] If fallback path was needed: `plugins/lsp-mcp/dist/` is also present (copy) and the `prepare-plugin-dist` script exists in `package.json` to keep it in sync. *(both present, byte-identical to repo-root `dist/`)*
@@ -137,7 +138,7 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 
 ## Anti-Patterns
 
-- **NO router code changes in this task.** Keep scope surgical. Multi-candidate routing, PATH probe, `list_languages`, `set_primary`, dynamic schemas — all subsequent tasks.
+- **~~NO router code changes in this task.~~** WIDENED 2026-04-17: scope includes a minimal router change (`resolveManifests`: on missing config, write stderr notice and start with zero manifests). Required to satisfy the empirical `/mcp connected` SC — CC launches the plugin MCP server with no env, so the prior exit-on-missing-config path always failed `/mcp`. Multi-candidate routing, PATH probe, `list_languages`, `set_primary`, dynamic schemas remain subsequent tasks.
 - **NO manifest library in this task.** The 12 default manifests are a dedicated task downstream. This task only needs the plugin to install cleanly — no manifests required for the install flow to succeed.
 - **NO `using-lsp-mcp` content beyond placeholder.** A real skill with triggers + examples is a separate task so `skill-reviewer` feedback doesn't contaminate this scaffolding work.
 - **NO pushing without user review.** Marketplace scaffolding is architectural; user should eyeball the commit before it goes remote.
@@ -202,3 +203,4 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 
 - [2026-04-17T12:06:32Z] [Seth] Primary-path scaffolding committed (46b0915) on dev, not pushed. Files: .claude-plugin/marketplace.json, plugins/lsp-mcp/{.claude-plugin/plugin.json,.mcp.json,skills/using-lsp-mcp/SKILL.md}, dist/ (+ .gitignore/README edits). Regression: 64/64 jest tests green. Pre-flight: no 'lsp' MCP name collision (~/.claude.json has only 'deepwiki'). STOP — empirical verification (step 3) requires user in a separate CC session. If primary path fails, fallback protocol in task body; if primary passes, close task.
 - [2026-04-17T12:18:20Z] [Seth] Primary path failed empirical verify (cache-escape). Diagnosed via ~/.claude/plugins/cache/lsp-mcp/lsp-mcp/0.1.0/: CC caches plugin subtree only, not repo root — ${CLAUDE_PLUGIN_ROOT}/../../dist/ resolves to a dir that doesn't exist. ${CLAUDE_PLUGIN_ROOT} substitution itself works (cached args still contain literal; substitution at spawn). Applied fallback: package.json build chain now 'tsc + shx rm + shx cp' producing plugins/lsp-mcp/dist/ byte-identical to dist/; .mcp.json updated to ${CLAUDE_PLUGIN_ROOT}/dist/index.js; clean wipes both. 64/64 tests still green.
+- [2026-04-17T19:29:30Z] [Seth] Commit #3: refactor to root-as-plugin layout + bundle deps + router tolerance for missing config. (1) Layout: moved .claude-plugin/plugin.json, .mcp.json, skills/using-lsp-mcp to repo root; deleted plugins/lsp-mcp/; marketplace source now '.'. (2) Build: switched tsc to bun build (single bundled dist/index.js, 859KB, all deps inlined); dropped prepare-plugin-dist + dual-dist logic. (3) Router change (TDD, user-authorized scope widening): extracted loadManifests to src/config.ts; added resolveManifests — missing configPath now writes stderr notice and returns []. Regression: 66/66 tests green (64 prior + 2 new config.test.ts). Smoke test passed: bundled server with no config + CLAUDE_PLUGIN_ROOT stays up, MCP stdio transport up. Awaits user re-verify in fresh CC session after cache refresh.
