@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "lsp-mcp",
-      "source": ".",
+      "source": "./",
       "description": "Meta-LSP MCP router: polyglot workspace/symbol for agents"
     }
   ]
