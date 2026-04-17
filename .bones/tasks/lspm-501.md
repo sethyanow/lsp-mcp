@@ -8,6 +8,8 @@ parent: lspm-cnq
 ---
 
 
+
+
 ## Context
 
 First task in Phase 1 sub-epic `lspm-cnq`, parent epic `lspm-y5n`.
@@ -120,18 +122,18 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 
 ## Success Criteria
 
-- [ ] `.claude-plugin/marketplace.json` exists, valid JSON, lists the `lsp-mcp` plugin.
-- [ ] `plugins/lsp-mcp/.claude-plugin/plugin.json` exists with complete manifest.
-- [ ] `plugins/lsp-mcp/.mcp.json` exists pointing at `dist/index.js` via whichever path (primary or fallback) was empirically verified.
-- [ ] `dist/` is committed (not gitignored) and present in the working tree.
+- [x] `.claude-plugin/marketplace.json` exists, valid JSON, lists the `lsp-mcp` plugin.
+- [x] `plugins/lsp-mcp/.claude-plugin/plugin.json` exists with complete manifest.
+- [x] `plugins/lsp-mcp/.mcp.json` exists pointing at `dist/index.js` via whichever path (primary or fallback) was empirically verified. *(primary committed in 46b0915, failed cache-escape check on user verify; fallback committed in commit #2 pointing at `${CLAUDE_PLUGIN_ROOT}/dist/index.js`; awaits user re-verify)*
+- [x] `dist/` is committed (not gitignored) and present in the working tree.
 - [ ] Empirical verification record: fresh CC session → `/plugin marketplace add <repo>` → `/plugin install lsp-mcp` → `/mcp` shows `lsp` server connected — documented via `bn log lspm-501 "..."` with which path worked.
-- [ ] If fallback path was needed: `plugins/lsp-mcp/dist/` is also present (copy) and the `prepare-plugin-dist` script exists in `package.json` to keep it in sync.
-- [ ] `README.md` Installation section updated to marketplace-install path.
-- [ ] `bun run test` still passes (no router code was changed; existing tests must remain green).
-- [ ] Placeholder skill file exists at `plugins/lsp-mcp/skills/using-lsp-mcp/SKILL.md` with clear placeholder marker.
-- [ ] Each verification attempt's changes are in a single, well-scoped commit on the current branch; not yet pushed. Primary-path commit is commit #1. If fallback is adopted, fallback changes go in commit #2 — do not amend commit #1.
-- [ ] If the fallback path was adopted: `bun run build` is chained to also run `prepare-plugin-dist` (e.g., `"build": "tsc && bun run prepare-plugin-dist"`), and the copy step cleans the destination first so stale files don't persist.
-- [ ] Pre-handoff pre-flight: agent checks `~/.claude.json` (and any project-local MCP config) for an existing MCP server named `lsp`; flags any collision in the hand-off message.
+- [x] If fallback path was needed: `plugins/lsp-mcp/dist/` is also present (copy) and the `prepare-plugin-dist` script exists in `package.json` to keep it in sync. *(both present, byte-identical to repo-root `dist/`)*
+- [x] `README.md` Installation section updated to marketplace-install path.
+- [x] `bun run test` still passes (no router code was changed; existing tests must remain green). *(64/64 green at commit 46b0915)*
+- [x] Placeholder skill file exists at `plugins/lsp-mcp/skills/using-lsp-mcp/SKILL.md` with clear placeholder marker.
+- [x] Each verification attempt's changes are in a single, well-scoped commit on the current branch; not yet pushed. Primary-path commit is commit #1 (`46b0915`). If fallback is adopted, fallback changes go in commit #2 — do not amend commit #1.
+- [x] If the fallback path was adopted: `bun run build` is chained to also run `prepare-plugin-dist` (e.g., `"build": "tsc && bun run prepare-plugin-dist"`), and the copy step cleans the destination first so stale files don't persist. *(chained inline: `"build": "tsc && shx rm -rf plugins/lsp-mcp/dist && shx cp -r dist plugins/lsp-mcp/dist"`; standalone `prepare-plugin-dist` kept for maintainer ergonomics; `clean` wipes both dists)*
+- [x] Pre-handoff pre-flight: agent checks `~/.claude.json` (and any project-local MCP config) for an existing MCP server named `lsp`; flags any collision in the hand-off message. *(no collision — `~/.claude.json` has only `deepwiki` globally; no project-local `lsp`)*
 
 ## Anti-Patterns
 
@@ -195,3 +197,8 @@ The epic's R10 flags `${CLAUDE_PLUGIN_ROOT}/../../dist/index.js` as `[UNVERIFIED
 - Betrayal: If the primary path fails verification, the fallback requires additional changes (script + copied `dist/`). That's either a `git commit --amend` (rewriting the handed-off commit) or a second commit (violating "single commit"). The skeleton doesn't say which.
 - Consequence: Agent either amends (risking disruption if the user has already checked out the commit) or creates a second commit (violating the SC), and either way does so without explicit authorization.
 - Mitigation: **Treat "single commit" as "single commit per verification attempt."** Primary-path commit is commit #1. If fallback is needed, the fallback's changes land in commit #2 explicitly — not an amend. The final SC is re-read as "each verification attempt's changes are in a single, well-scoped commit; not yet pushed." Update SC wording accordingly.
+
+## Log
+
+- [2026-04-17T12:06:32Z] [Seth] Primary-path scaffolding committed (46b0915) on dev, not pushed. Files: .claude-plugin/marketplace.json, plugins/lsp-mcp/{.claude-plugin/plugin.json,.mcp.json,skills/using-lsp-mcp/SKILL.md}, dist/ (+ .gitignore/README edits). Regression: 64/64 jest tests green. Pre-flight: no 'lsp' MCP name collision (~/.claude.json has only 'deepwiki'). STOP — empirical verification (step 3) requires user in a separate CC session. If primary path fails, fallback protocol in task body; if primary passes, close task.
+- [2026-04-17T12:18:20Z] [Seth] Primary path failed empirical verify (cache-escape). Diagnosed via ~/.claude/plugins/cache/lsp-mcp/lsp-mcp/0.1.0/: CC caches plugin subtree only, not repo root — ${CLAUDE_PLUGIN_ROOT}/../../dist/ resolves to a dir that doesn't exist. ${CLAUDE_PLUGIN_ROOT} substitution itself works (cached args still contain literal; substitution at spawn). Applied fallback: package.json build chain now 'tsc + shx rm + shx cp' producing plugins/lsp-mcp/dist/ byte-identical to dist/; .mcp.json updated to ${CLAUDE_PLUGIN_ROOT}/dist/index.js; clean wipes both. 64/64 tests still green.

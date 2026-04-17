@@ -8,8 +8,9 @@
         "lsp-mcp": "dist/index.js"
     },
     "scripts": {
-        "build": "tsc",
-        "clean": "shx rm -rf ./dist",
+        "build": "tsc && shx rm -rf plugins/lsp-mcp/dist && shx cp -r dist plugins/lsp-mcp/dist",
+        "prepare-plugin-dist": "shx rm -rf plugins/lsp-mcp/dist && shx cp -r dist plugins/lsp-mcp/dist",
+        "clean": "shx rm -rf ./dist plugins/lsp-mcp/dist",
         "test": "jest --forceExit"
     },
     "dependencies": {
