@@ -29,6 +29,12 @@ const LspParamsSchema = z
     .union([z.record(z.any()), z.array(z.any()), z.null()])
     .describe('JSON-RPC params (object, array, or null)');
 
+// R7 (downstream task): replace with z.enum() over active manifest names.
+const ViaSchema = z
+    .string()
+    .optional()
+    .describe('Manifest name to target (overrides primary routing).');
+
 /**
  * Create the meta-LSP MCP server.
  * All tools delegate to the router which fans requests to the appropriate
@@ -77,11 +83,18 @@ export function createMcpServer(router: Router): McpServer {
                         'Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' +
                             'Omit to search all configured languages.'
                     ),
+                // R7 (downstream task): replace with z.enum() over active manifest names.
+                manifests: z
+                    .array(z.string())
+                    .optional()
+                    .describe(
+                        'Restrict search to specific manifest names (overrides primary-only fan-out).'
+                    ),
             },
         },
-        async ({ name, kind, langs }) => {
+        async ({ name, kind, langs, manifests }) => {
             try {
-                const symbols = await router.symbolSearch(name, langs);
+                const symbols = await router.symbolSearch(name, langs, manifests);
                 const normalized = symbols.map((s) => ({
                     ...s,
                     kind: symbolKindName(s.kind),
@@ -109,11 +122,11 @@ export function createMcpServer(router: Router): McpServer {
             description:
                 'Go-to-definition: returns the location(s) where the symbol at the given ' +
                 'position is defined.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
         },
-        async ({ file, pos }) => {
+        async ({ file, pos, via }) => {
             try {
-                return jsonResult(await router.definitions(file, pos));
+                return jsonResult(await router.definitions(file, pos, via));
             } catch (err) {
                 return toolError('defs', err);
             }
@@ -126,11 +139,13 @@ export function createMcpServer(router: Router): McpServer {
         'refs',
         {
             description: 'Find all references to the symbol at the given position.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
         },
-        async ({ file, pos }) => {
+        async ({ file, pos, via }) => {
             try {
-                return jsonResult(await router.references(file, pos));
+                // `references` positional signature: (fileUri, position, includeDeclaration=true, via?).
+                // Pass `true` explicitly so the via slot resolves correctly.
+                return jsonResult(await router.references(file, pos, true, via));
             } catch (err) {
                 return toolError('refs', err);
             }
@@ -145,11 +160,11 @@ export function createMcpServer(router: Router): McpServer {
             description:
                 'Find implementations (concrete subclasses / interface implementations) of ' +
                 'the symbol at the given position.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
         },
-        async ({ file, pos }) => {
+        async ({ file, pos, via }) => {
             try {
-                return jsonResult(await router.implementations(file, pos));
+                return jsonResult(await router.implementations(file, pos, via));
             } catch (err) {
                 return toolError('impls', err);
             }
@@ -162,11 +177,11 @@ export function createMcpServer(router: Router): McpServer {
         'hover',
         {
             description: 'Return type information and documentation for the symbol at the given position.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
         },
-        async ({ file, pos }) => {
+        async ({ file, pos, via }) => {
             try {
-                return jsonResult(await router.hover(file, pos));
+                return jsonResult(await router.hover(file, pos, via));
             } catch (err) {
                 return toolError('hover', err);
             }
@@ -179,11 +194,11 @@ export function createMcpServer(router: Router): McpServer {
         'outline',
         {
             description: 'List all symbols defined in a file (document symbol outline).',
-            inputSchema: { file: FileUriSchema },
+            inputSchema: { file: FileUriSchema, via: ViaSchema },
         },
-        async ({ file }) => {
+        async ({ file, via }) => {
             try {
-                return jsonResult(await router.documentSymbols(file));
+                return jsonResult(await router.documentSymbols(file, via));
             } catch (err) {
                 return toolError('outline', err);
             }
@@ -196,11 +211,11 @@ export function createMcpServer(router: Router): McpServer {
         'diagnostics',
         {
             description: 'Return errors and warnings for a file.',
-            inputSchema: { file: FileUriSchema },
+            inputSchema: { file: FileUriSchema, via: ViaSchema },
         },
-        async ({ file }) => {
+        async ({ file, via }) => {
             try {
-                return jsonResult(await router.diagnostics(file));
+                return jsonResult(await router.diagnostics(file, via));
             } catch (err) {
                 return toolError('diagnostics', err);
             }
@@ -221,11 +236,12 @@ export function createMcpServer(router: Router): McpServer {
                     .describe('Language ID of the target server (e.g. "python", "typescript")'),
                 method: z.string().describe('LSP method name (e.g. "textDocument/codeLens")'),
                 params: LspParamsSchema,
+                via: ViaSchema,
             },
         },
-        async ({ lang, method, params }) => {
+        async ({ lang, method, params, via }) => {
             try {
-                return jsonResult(await router.raw(lang, method, params));
+                return jsonResult(await router.raw(lang, method, params, via));
             } catch (err) {
                 return toolError('lsp', err);
             }
@@ -244,11 +260,11 @@ export function createMcpServer(router: Router): McpServer {
                 description:
                     'Prepare call-hierarchy items at the given position. Pass a returned item to ' +
                     'incoming_calls or outgoing_calls to explore the graph.',
-                inputSchema: { file: FileUriSchema, pos: PositionSchema },
+                inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
             },
-            async ({ file, pos }) => {
+            async ({ file, pos, via }) => {
                 try {
-                    return jsonResult(await router.prepareCallHierarchy(file, pos));
+                    return jsonResult(await router.prepareCallHierarchy(file, pos, via));
                 } catch (err) {
                     return toolError('call_hierarchy_prepare', err);
                 }
@@ -263,11 +279,12 @@ export function createMcpServer(router: Router): McpServer {
                     item: z
                         .record(z.any())
                         .describe('A CallHierarchyItem from call_hierarchy_prepare'),
+                    via: ViaSchema,
                 },
             },
-            async ({ item }) => {
+            async ({ item, via }) => {
                 try {
-                    return jsonResult(await router.incomingCalls(item));
+                    return jsonResult(await router.incomingCalls(item, via));
                 } catch (err) {
                     return toolError('incoming_calls', err);
                 }
@@ -282,11 +299,12 @@ export function createMcpServer(router: Router): McpServer {
                     item: z
                         .record(z.any())
                         .describe('A CallHierarchyItem from call_hierarchy_prepare'),
+                    via: ViaSchema,
                 },
             },
-            async ({ item }) => {
+            async ({ item, via }) => {
                 try {
-                    return jsonResult(await router.outgoingCalls(item));
+                    return jsonResult(await router.outgoingCalls(item, via));
                 } catch (err) {
                     return toolError('outgoing_calls', err);
                 }

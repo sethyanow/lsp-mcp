@@ -21505,22 +21505,47 @@ function findRoot(startDir, markers) {
 var import_url2 = require("url");
 
 class Router {
-  _servers;
-  constructor(servers) {
-    this._servers = servers;
+  _entries;
+  _byName;
+  _langMap;
+  constructor(entries) {
+    this._entries = Router._dedupeByName(entries);
+    this._byName = new Map(this._entries.map((e) => [e.manifest.name, e]));
+    this._langMap = Router._buildLangMap(this._entries);
   }
   get servers() {
-    return this._servers;
+    return this._entries.map((e) => e.server);
+  }
+  get entries() {
+    return this._entries;
+  }
+  entry(name) {
+    return this._byName.get(name);
+  }
+  primaryForLang(langId) {
+    const slot = this._langMap.get(langId);
+    return slot ? this._byName.get(slot.primary) : undefined;
+  }
+  candidatesForLang(langId) {
+    return this._langMap.get(langId)?.candidates ?? [];
+  }
+  primaryForFile(filePath) {
+    for (const [, slot] of this._langMap) {
+      const entry = this._byName.get(slot.primary);
+      if (entry?.server.ownsFile(filePath))
+        return entry;
+    }
+    return;
   }
   serverForFile(filePath) {
-    return this._servers.find((s) => s.ownsFile(filePath));
+    return this.primaryForFile(filePath)?.server;
   }
   serverForLang(langId) {
-    return this._servers.find((s) => s.ownsLang(langId));
+    return this.primaryForLang(langId)?.server;
   }
-  async symbolSearch(query, langIds) {
-    const targets = langIds ? this._servers.filter((s) => langIds.some((l) => s.ownsLang(l))) : this._servers;
-    const settled = await Promise.allSettled(targets.map((s) => s.workspaceSymbol(query)));
+  async symbolSearch(query, langIds, manifests) {
+    const targets = this._selectSymbolSearchTargets(langIds, manifests);
+    const settled = await Promise.allSettled(targets.map((e) => e.server.workspaceSymbol(query)));
     const merged = [];
     const seen = new Set;
     for (let i = 0;i < settled.length; i++) {
@@ -21542,27 +21567,42 @@ class Router {
     }
     return merged;
   }
-  async definitions(fileUri, position) {
-    return this._fileRequest(fileUri, "textDocument/definition", buildTextDocParams(fileUri, position), []);
+  async definitions(fileUri, position, via) {
+    const server = this._routeFileRequest(fileUri, via);
+    if (!server)
+      return [];
+    return this._requestOnServer(server, fileUri, "textDocument/definition", buildTextDocParams(fileUri, position), []);
   }
-  async references(fileUri, position, includeDeclaration = true) {
-    return this._fileRequest(fileUri, "textDocument/references", {
+  async references(fileUri, position, includeDeclaration = true, via) {
+    const server = this._routeFileRequest(fileUri, via);
+    if (!server)
+      return [];
+    return this._requestOnServer(server, fileUri, "textDocument/references", {
       textDocument: { uri: fileUri },
       position,
       context: { includeDeclaration }
     }, []);
   }
-  async implementations(fileUri, position) {
-    return this._fileRequest(fileUri, "textDocument/implementation", buildTextDocParams(fileUri, position), []);
+  async implementations(fileUri, position, via) {
+    const server = this._routeFileRequest(fileUri, via);
+    if (!server)
+      return [];
+    return this._requestOnServer(server, fileUri, "textDocument/implementation", buildTextDocParams(fileUri, position), []);
   }
-  async hover(fileUri, position) {
-    return this._fileRequest(fileUri, "textDocument/hover", buildTextDocParams(fileUri, position), null);
+  async hover(fileUri, position, via) {
+    const server = this._routeFileRequest(fileUri, via);
+    if (!server)
+      return null;
+    return this._requestOnServer(server, fileUri, "textDocument/hover", buildTextDocParams(fileUri, position), null);
   }
-  async documentSymbols(fileUri) {
-    return this._fileRequest(fileUri, "textDocument/documentSymbol", { textDocument: { uri: fileUri } }, []);
+  async documentSymbols(fileUri, via) {
+    const server = this._routeFileRequest(fileUri, via);
+    if (!server)
+      return [];
+    return this._requestOnServer(server, fileUri, "textDocument/documentSymbol", { textDocument: { uri: fileUri } }, []);
   }
-  async diagnostics(fileUri) {
-    const server = this._serverForUri(fileUri);
+  async diagnostics(fileUri, via) {
+    const server = this._routeFileRequest(fileUri, via);
     if (!server)
       return [];
     await this._openWithPause(server, fileUri);
@@ -21572,38 +21612,75 @@ class Router {
     const report = result;
     return report?.items ?? [];
   }
-  async prepareCallHierarchy(fileUri, position) {
-    return this._fileRequest(fileUri, "textDocument/prepareCallHierarchy", buildTextDocParams(fileUri, position), []);
+  async prepareCallHierarchy(fileUri, position, via) {
+    const server = this._routeFileRequest(fileUri, via);
+    if (!server)
+      return [];
+    return this._requestOnServer(server, fileUri, "textDocument/prepareCallHierarchy", buildTextDocParams(fileUri, position), []);
   }
-  async incomingCalls(item) {
-    const server = this._serverForCallHierarchyItem(item);
+  async incomingCalls(item, via) {
+    const server = this._routeCallHierarchy(item, via);
     if (!server)
       return [];
     await server.ensureRunning();
     const result = await server.request("callHierarchy/incomingCalls", { item });
     return Array.isArray(result) ? result : [];
   }
-  async outgoingCalls(item) {
-    const server = this._serverForCallHierarchyItem(item);
+  async outgoingCalls(item, via) {
+    const server = this._routeCallHierarchy(item, via);
     if (!server)
       return [];
     await server.ensureRunning();
     const result = await server.request("callHierarchy/outgoingCalls", { item });
     return Array.isArray(result) ? result : [];
   }
-  async raw(lang, method, params) {
-    const server = this.serverForLang(lang);
+  async raw(lang, method, params, via) {
+    const server = via !== undefined ? this._requireByName(via).server : this.serverForLang(lang);
     if (!server) {
       throw new Error(`No server configured for language: ${lang}`);
     }
     return server.request(method, params);
   }
   async shutdownAll() {
-    await Promise.allSettled(this._servers.map((s) => s.shutdown()));
+    await Promise.allSettled(this._entries.map((e) => e.server.shutdown()));
   }
   forceKillAll() {
-    for (const s of this._servers)
-      s.forceKill();
+    for (const e of this._entries)
+      e.server.forceKill();
+  }
+  static _dedupeByName(entries) {
+    const seen = new Set;
+    const result = [];
+    for (const entry of entries) {
+      const name = entry.manifest.name;
+      if (seen.has(name)) {
+        process.stderr.write(`[lsp-mcp] duplicate manifest name "${name}" — dropping later entry
+`);
+        continue;
+      }
+      seen.add(name);
+      result.push(entry);
+    }
+    return result;
+  }
+  static _buildLangMap(entries) {
+    const map = new Map;
+    for (const entry of entries) {
+      for (const langId of entry.manifest.langIds) {
+        const slot = map.get(langId);
+        if (slot) {
+          if (!slot.candidates.some((c) => c.manifest.name === entry.manifest.name)) {
+            slot.candidates.push(entry);
+          }
+        } else {
+          map.set(langId, {
+            candidates: [entry],
+            primary: entry.manifest.name
+          });
+        }
+      }
+    }
+    return map;
   }
   _serverForUri(uri) {
     let filePath = uri;
@@ -21616,11 +21693,25 @@ class Router {
     }
     return this.serverForFile(filePath);
   }
-  _serverForCallHierarchyItem(item) {
+  _routeFileRequest(fileUri, via) {
+    if (via !== undefined)
+      return this._requireByName(via).server;
+    return this._serverForUri(fileUri);
+  }
+  _routeCallHierarchy(item, via) {
+    if (via !== undefined)
+      return this._requireByName(via).server;
     const uri = item?.uri;
     if (typeof uri !== "string")
       return;
     return this._serverForUri(uri);
+  }
+  _requireByName(name) {
+    const entry = this._byName.get(name);
+    if (!entry) {
+      throw new Error(`No manifest named "${name}"`);
+    }
+    return entry;
   }
   async _openWithPause(server, fileUri) {
     const justOpened = await server.openDocument(fileUri, server.defaultLangId);
@@ -21629,13 +21720,41 @@ class Router {
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  async _fileRequest(fileUri, method, params, fallback) {
-    const server = this._serverForUri(fileUri);
-    if (!server)
-      return fallback;
+  async _requestOnServer(server, fileUri, method, params, fallback) {
     await this._openWithPause(server, fileUri);
     const result = await server.request(method, params);
     return result ?? fallback;
+  }
+  _selectSymbolSearchTargets(langIds, manifests) {
+    const seen = new Set;
+    const result = [];
+    if (manifests !== undefined && manifests.length > 0) {
+      for (const name of manifests) {
+        const entry = this._byName.get(name);
+        if (!entry) {
+          process.stderr.write(`[lsp-mcp] symbol_search: no manifest named "${name}"
+`);
+          continue;
+        }
+        if (!seen.has(entry.manifest.name)) {
+          seen.add(entry.manifest.name);
+          result.push(entry);
+        }
+      }
+      return result;
+    }
+    for (const [langId, slot] of this._langMap) {
+      if (langIds && !langIds.includes(langId))
+        continue;
+      const entry = this._byName.get(slot.primary);
+      if (!entry)
+        continue;
+      if (!seen.has(entry.manifest.name)) {
+        seen.add(entry.manifest.name);
+        result.push(entry);
+      }
+    }
+    return result;
   }
 }
 function buildTextDocParams(uri, position) {
@@ -25277,6 +25396,7 @@ var FileUriSchema = exports_external.string().refine((s) => {
   }
 }, { message: 'must be a local file:// URI (e.g. "file:///abs/path/to/file.py")' }).describe('File URI (e.g. "file:///abs/path/to/file.py")');
 var LspParamsSchema = exports_external.union([exports_external.record(exports_external.any()), exports_external.array(exports_external.any()), exports_external.null()]).describe("JSON-RPC params (object, array, or null)");
+var ViaSchema = exports_external.string().optional().describe("Manifest name to target (overrides primary routing).");
 function createMcpServer(router) {
   const server = new McpServer({
     name: "lsp-mcp",
@@ -25287,11 +25407,12 @@ function createMcpServer(router) {
     inputSchema: {
       name: exports_external.string().describe("Symbol name to search for (supports partial matches)"),
       kind: exports_external.string().optional().describe('Filter by symbol kind (e.g. "class", "function", "variable"). Optional.'),
-      langs: exports_external.array(exports_external.string()).optional().describe('Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' + "Omit to search all configured languages.")
+      langs: exports_external.array(exports_external.string()).optional().describe('Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' + "Omit to search all configured languages."),
+      manifests: exports_external.array(exports_external.string()).optional().describe("Restrict search to specific manifest names (overrides primary-only fan-out).")
     }
-  }, async ({ name, kind, langs }) => {
+  }, async ({ name, kind, langs, manifests }) => {
     try {
-      const symbols = await router.symbolSearch(name, langs);
+      const symbols = await router.symbolSearch(name, langs, manifests);
       const normalized = symbols.map((s) => ({
         ...s,
         kind: symbolKindName(s.kind)
@@ -25304,60 +25425,60 @@ function createMcpServer(router) {
   });
   server.registerTool("defs", {
     description: "Go-to-definition: returns the location(s) where the symbol at the given " + "position is defined.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema }
-  }, async ({ file, pos }) => {
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+  }, async ({ file, pos, via }) => {
     try {
-      return jsonResult(await router.definitions(file, pos));
+      return jsonResult(await router.definitions(file, pos, via));
     } catch (err) {
       return toolError("defs", err);
     }
   });
   server.registerTool("refs", {
     description: "Find all references to the symbol at the given position.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema }
-  }, async ({ file, pos }) => {
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+  }, async ({ file, pos, via }) => {
     try {
-      return jsonResult(await router.references(file, pos));
+      return jsonResult(await router.references(file, pos, true, via));
     } catch (err) {
       return toolError("refs", err);
     }
   });
   server.registerTool("impls", {
     description: "Find implementations (concrete subclasses / interface implementations) of " + "the symbol at the given position.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema }
-  }, async ({ file, pos }) => {
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+  }, async ({ file, pos, via }) => {
     try {
-      return jsonResult(await router.implementations(file, pos));
+      return jsonResult(await router.implementations(file, pos, via));
     } catch (err) {
       return toolError("impls", err);
     }
   });
   server.registerTool("hover", {
     description: "Return type information and documentation for the symbol at the given position.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema }
-  }, async ({ file, pos }) => {
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+  }, async ({ file, pos, via }) => {
     try {
-      return jsonResult(await router.hover(file, pos));
+      return jsonResult(await router.hover(file, pos, via));
     } catch (err) {
       return toolError("hover", err);
     }
   });
   server.registerTool("outline", {
     description: "List all symbols defined in a file (document symbol outline).",
-    inputSchema: { file: FileUriSchema }
-  }, async ({ file }) => {
+    inputSchema: { file: FileUriSchema, via: ViaSchema }
+  }, async ({ file, via }) => {
     try {
-      return jsonResult(await router.documentSymbols(file));
+      return jsonResult(await router.documentSymbols(file, via));
     } catch (err) {
       return toolError("outline", err);
     }
   });
   server.registerTool("diagnostics", {
     description: "Return errors and warnings for a file.",
-    inputSchema: { file: FileUriSchema }
-  }, async ({ file }) => {
+    inputSchema: { file: FileUriSchema, via: ViaSchema }
+  }, async ({ file, via }) => {
     try {
-      return jsonResult(await router.diagnostics(file));
+      return jsonResult(await router.diagnostics(file, via));
     } catch (err) {
       return toolError("diagnostics", err);
     }
@@ -25367,11 +25488,12 @@ function createMcpServer(router) {
     inputSchema: {
       lang: exports_external.string().describe('Language ID of the target server (e.g. "python", "typescript")'),
       method: exports_external.string().describe('LSP method name (e.g. "textDocument/codeLens")'),
-      params: LspParamsSchema
+      params: LspParamsSchema,
+      via: ViaSchema
     }
-  }, async ({ lang, method, params }) => {
+  }, async ({ lang, method, params, via }) => {
     try {
-      return jsonResult(await router.raw(lang, method, params));
+      return jsonResult(await router.raw(lang, method, params, via));
     } catch (err) {
       return toolError("lsp", err);
     }
@@ -25380,10 +25502,10 @@ function createMcpServer(router) {
   if (hasCallHierarchy) {
     server.registerTool("call_hierarchy_prepare", {
       description: "Prepare call-hierarchy items at the given position. Pass a returned item to " + "incoming_calls or outgoing_calls to explore the graph.",
-      inputSchema: { file: FileUriSchema, pos: PositionSchema }
-    }, async ({ file, pos }) => {
+      inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+    }, async ({ file, pos, via }) => {
       try {
-        return jsonResult(await router.prepareCallHierarchy(file, pos));
+        return jsonResult(await router.prepareCallHierarchy(file, pos, via));
       } catch (err) {
         return toolError("call_hierarchy_prepare", err);
       }
@@ -25391,11 +25513,12 @@ function createMcpServer(router) {
     server.registerTool("incoming_calls", {
       description: "Return all callers of the given call-hierarchy item.",
       inputSchema: {
-        item: exports_external.record(exports_external.any()).describe("A CallHierarchyItem from call_hierarchy_prepare")
+        item: exports_external.record(exports_external.any()).describe("A CallHierarchyItem from call_hierarchy_prepare"),
+        via: ViaSchema
       }
-    }, async ({ item }) => {
+    }, async ({ item, via }) => {
       try {
-        return jsonResult(await router.incomingCalls(item));
+        return jsonResult(await router.incomingCalls(item, via));
       } catch (err) {
         return toolError("incoming_calls", err);
       }
@@ -25403,11 +25526,12 @@ function createMcpServer(router) {
     server.registerTool("outgoing_calls", {
       description: "Return all callees of the given call-hierarchy item.",
       inputSchema: {
-        item: exports_external.record(exports_external.any()).describe("A CallHierarchyItem from call_hierarchy_prepare")
+        item: exports_external.record(exports_external.any()).describe("A CallHierarchyItem from call_hierarchy_prepare"),
+        via: ViaSchema
       }
-    }, async ({ item }) => {
+    }, async ({ item, via }) => {
       try {
-        return jsonResult(await router.outgoingCalls(item));
+        return jsonResult(await router.outgoingCalls(item, via));
       } catch (err) {
         return toolError("outgoing_calls", err);
       }
@@ -25517,8 +25641,11 @@ async function main() {
 `);
     }
   }
-  const servers = manifests.map((m) => new LspServer(m, workspaceRoot, pluginsDir));
-  const router = new Router(servers);
+  const entries = manifests.map((m) => ({
+    manifest: m,
+    server: new LspServer(m, workspaceRoot, pluginsDir)
+  }));
+  const router = new Router(entries);
   const mcpServer = createMcpServer(router);
   let shuttingDown = false;
   const doShutdown = async () => {
@@ -25550,5 +25677,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=FE6E8A32D55572E364756E2164756E21
+//# debugId=388281BA296A456164756E2164756E21
 //# sourceMappingURL=index.js.map

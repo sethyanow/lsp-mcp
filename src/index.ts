@@ -17,7 +17,7 @@
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { LspServer } from './lsp-server.js';
-import { Router } from './router.js';
+import { Router, type ManifestEntry } from './router.js';
 import { createMcpServer } from './mcp-server.js';
 import { resolveManifests } from './config.js';
 
@@ -43,8 +43,11 @@ async function main(): Promise<void> {
         }
     }
 
-    const servers = manifests.map((m) => new LspServer(m, workspaceRoot, pluginsDir));
-    const router = new Router(servers);
+    const entries: ManifestEntry[] = manifests.map((m) => ({
+        manifest: m,
+        server: new LspServer(m, workspaceRoot, pluginsDir),
+    }));
+    const router = new Router(entries);
     const mcpServer = createMcpServer(router);
 
     let shuttingDown = false;

@@ -2,11 +2,15 @@ import path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { LspServer } from '../lsp-server';
-import { Router } from '../router';
+import { Router, type ManifestEntry } from '../router';
 import { createMcpServer } from '../mcp-server';
 import { PluginManifestSchema } from '../types';
 
 const STUB = path.resolve(__dirname, 'fixtures/stub-lsp.js');
+
+function entriesFrom(servers: LspServer[]): ManifestEntry[] {
+    return servers.map((s) => ({ manifest: s.manifest, server: s }));
+}
 
 function makeServer(extraArgs: string[] = []): LspServer {
     const manifest = PluginManifestSchema.parse({
@@ -41,7 +45,7 @@ async function buildClient(router: Router): Promise<{
 
 describe('e2e: MCP client ↔ Router ↔ stub LSP', () => {
     it('symbol_search returns results from a real LSP round-trip', async () => {
-        const router = new Router([makeServer()]);
+        const router = new Router(entriesFrom([makeServer()]));
         const { client, teardown } = await buildClient(router);
         try {
             const result = await client.callTool({
@@ -60,7 +64,7 @@ describe('e2e: MCP client ↔ Router ↔ stub LSP', () => {
     });
 
     it('survives cold-cache: server returns [] twice before real results', async () => {
-        const router = new Router([makeServer(['--symbol-empty-for=2'])]);
+        const router = new Router(entriesFrom([makeServer(['--symbol-empty-for=2'])]));
         const { client, teardown } = await buildClient(router);
         try {
             const result = await client.callTool({
@@ -76,7 +80,7 @@ describe('e2e: MCP client ↔ Router ↔ stub LSP', () => {
     });
 
     it('normalizes WorkspaceSymbol-shape responses (no range) end-to-end', async () => {
-        const router = new Router([makeServer(['--symbol-shape=ws'])]);
+        const router = new Router(entriesFrom([makeServer(['--symbol-shape=ws'])]));
         const { client, teardown } = await buildClient(router);
         try {
             const result = await client.callTool({
@@ -96,7 +100,7 @@ describe('e2e: MCP client ↔ Router ↔ stub LSP', () => {
     });
 
     it('defs routes through the real stub and returns its locations', async () => {
-        const router = new Router([makeServer()]);
+        const router = new Router(entriesFrom([makeServer()]));
         const { client, teardown } = await buildClient(router);
         try {
             // Path doesn't need to exist — openDocument tolerates missing files

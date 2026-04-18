@@ -1,11 +1,14 @@
 ---
 id: lspm-z4z
 title: Refactor router to multi-candidate routing with via/manifests params
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
 
 
 
@@ -277,20 +280,20 @@ class Router {
 
 ## Success Criteria
 
-- [ ] `ManifestEntry` interface exported from `src/router.ts` with shape `{ manifest: PluginManifest; server: LspServer }`.
-- [ ] `Router` constructor signature is `constructor(entries: ManifestEntry[])`; old `LspServer[]` signature removed; no legacy factory shim.
-- [ ] Router maintains internal `_langMap: Map<langId, { candidates: ManifestEntry[], primary: string }>`; first-registered candidate becomes primary; deterministic given registration order.
-- [ ] Public accessors present: `primaryForLang(langId)`, `candidatesForLang(langId)`, `primaryForFile(filePath)`, `entry(name)`, `get servers()`, `get entries()`.
-- [ ] Legacy accessors `serverForFile` / `serverForLang` preserved, delegating to primary lookups.
-- [ ] Every positional router method (`definitions`, `references`, `implementations`, `hover`, `documentSymbols`, `diagnostics`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `raw`) accepts optional `via?: string`; unknown `via` throws `Error('No manifest named "${via}"')`; omitted `via` preserves primary routing.
-- [ ] `router.symbolSearch(query, langIds?, manifests?)` — explicit `manifests` scopes fan-out; unknown name skipped with stderr log; explicit-branch also dedupes by manifest name (duplicate inputs fan once); default (no `manifests` or empty array) fans across each langId's primary only, deduped by manifest name.
-- [ ] Router constructor dedupes entries by `manifest.name` with first-wins semantics; duplicate names stderr-log `[lsp-mcp] duplicate manifest name "${name}" — dropping later entry`; `_byName` and `_langMap` both built from the deduped list.
-- [ ] Empty-string `via` routes as unknown name and throws (consistent with any unknown via); presence check uses `via !== undefined`, not truthy.
-- [ ] Every positional MCP tool in `src/mcp-server.ts` declares `via?` in its Zod input schema; `symbol_search` declares `manifests?` as optional string array. Handlers forward to the router. Each added schema field has an inline comment deferring dynamic enums to R7.
-- [ ] `src/index.ts` constructs a `ManifestEntry[]` and passes it to the Router.
-- [ ] `bun run test` — all 66 pre-existing tests + new tests for (a) multi-candidate routing map construction + first-registered primary, (b) `primaryForFile` across candidates, (c) `via` on each of 10 positional methods including unknown-name error path, (d) `manifests` scoping including unknown-name skip + stderr log, (e) default-fans-primaries-only, (f) MCP tool schemas expose `via` / `manifests`, (g) MCP tool arg pass-through behavior.
-- [ ] `bun run typecheck` clean; `bun run build` produces a bundled `dist/index.js`.
-- [ ] Manual smoke: `echo '' | node dist/index.js` starts, logs zero-manifest notice, exits cleanly without traceback.
+- [x] `ManifestEntry` interface exported from `src/router.ts` with shape `{ manifest: PluginManifest; server: LspServer }`.
+- [x] `Router` constructor signature is `constructor(entries: ManifestEntry[])`; old `LspServer[]` signature removed; no legacy factory shim.
+- [x] Router maintains internal `_langMap: Map<langId, { candidates: ManifestEntry[], primary: string }>`; first-registered candidate becomes primary; deterministic given registration order.
+- [x] Public accessors present: `primaryForLang(langId)`, `candidatesForLang(langId)`, `primaryForFile(filePath)`, `entry(name)`, `get servers()`, `get entries()`.
+- [x] Legacy accessors `serverForFile` / `serverForLang` preserved, delegating to primary lookups.
+- [x] Every positional router method (`definitions`, `references`, `implementations`, `hover`, `documentSymbols`, `diagnostics`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `raw`) accepts optional `via?: string`; unknown `via` throws `Error('No manifest named "${via}"')`; omitted `via` preserves primary routing.
+- [x] `router.symbolSearch(query, langIds?, manifests?)` — explicit `manifests` scopes fan-out; unknown name skipped with stderr log; explicit-branch also dedupes by manifest name (duplicate inputs fan once); default (no `manifests` or empty array) fans across each langId's primary only, deduped by manifest name.
+- [x] Router constructor dedupes entries by `manifest.name` with first-wins semantics; duplicate names stderr-log `[lsp-mcp] duplicate manifest name "${name}" — dropping later entry`; `_byName` and `_langMap` both built from the deduped list.
+- [x] Empty-string `via` routes as unknown name and throws (consistent with any unknown via); presence check uses `via !== undefined`, not truthy.
+- [x] Every positional MCP tool in `src/mcp-server.ts` declares `via?` in its Zod input schema; `symbol_search` declares `manifests?` as optional string array. Handlers forward to the router. Each added schema field has an inline comment deferring dynamic enums to R7.
+- [x] `src/index.ts` constructs a `ManifestEntry[]` and passes it to the Router.
+- [x] `bun run test` — all 66 pre-existing tests + new tests for (a) multi-candidate routing map construction + first-registered primary, (b) `primaryForFile` across candidates, (c) `via` on each of 10 positional methods including unknown-name error path, (d) `manifests` scoping including unknown-name skip + stderr log, (e) default-fans-primaries-only, (f) MCP tool schemas expose `via` / `manifests`, (g) MCP tool arg pass-through behavior. **106 tests green.**
+- [x] `bun run typecheck` clean; `bun run build` produces a bundled `dist/index.js`. **0.86MB bundle, 240 modules.**
+- [x] Manual smoke: `echo '' | node dist/index.js` starts, logs zero-manifest notice, exits cleanly without traceback.
 - [ ] Single commit on `dev`, not pushed. Commit message references `lspm-z4z` and enumerates out-of-scope R2/R3/R5/R6/R7/R8/R9.
 
 ## Anti-Patterns

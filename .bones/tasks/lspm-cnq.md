@@ -32,12 +32,12 @@ Out of Phase 1 (→ Phase 2, `lspm-erd`): fork wrappers, `.local.md` settings, `
 - [x] `.claude-plugin/marketplace.json` exists at repo root and validates against the CC marketplace schema. *(satisfied by `lspm-501`; schema accepts `source: "./"` and plugin installs cleanly)*
 - [x] `.claude-plugin/plugin.json` exists at repo root with `mcpServers` inlined (path: `${CLAUDE_PLUGIN_ROOT}/dist/index.js`); path resolution empirically verified under CC marketplace install. *(satisfied by `lspm-501` commit 633ea50 — `/mcp` shows `lsp` connected; MCP tool calls route successfully)*
 - [ ] `manifests/` (at repo root) contains a JSON manifest for each of: pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, lua-language-server, elixir-ls, svelte-language-server, bash-language-server, starpls, bazel-lsp.
-- [ ] Router routing model is `Map<langId, { candidates: ManifestEntry[], primary: string }>`; 1:1 hardcoding removed from all tool handlers.
+- [x] Router routing model is `Map<langId, { candidates: ManifestEntry[], primary: string }>`; 1:1 hardcoding removed from all tool handlers. *(satisfied by `lspm-z4z`)*
 - [ ] PATH probe at startup sets `status: "ok" | "binary_not_found"` per manifest; only `ok` manifests join the routing map; all are visible to `list_languages`.
 - [ ] `list_languages` MCP tool returns `{lang, manifest, primary: bool, status, capabilities}[]`.
 - [ ] `set_primary(lang, manifest)` MCP tool swaps primary in-memory without restart.
-- [ ] `via?` param threaded through all positional tool handlers (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, call-hierarchy tools); default behavior preserved when omitted.
-- [ ] `manifests?` param threaded through `symbol_search`; default fans across primaries only; explicit list scopes to named manifests.
+- [x] `via?` param threaded through all positional tool handlers (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, call-hierarchy tools); default behavior preserved when omitted. *(satisfied by `lspm-z4z`)*
+- [x] `manifests?` param threaded through `symbol_search`; default fans across primaries only; explicit list scopes to named manifests. *(satisfied by `lspm-z4z`)*
 - [ ] MCP tool input schemas built dynamically at startup; `lang` / `langs` / `via` / `manifests` parameters expose enum values reflecting currently-active manifests.
 - [ ] Layered manifest discovery: built-in defaults dir + `$CLAUDE_PLUGIN_ROOT` glob + `LSP_MCP_CONFIG` file + `LSP_MCP_MANIFESTS_DIR` all merge; later source wins on name collision; conflict logged to stderr.
 - [ ] `skills/using-lsp-mcp/SKILL.md` (at repo root) ships with third-person description, specific trigger phrases for polyglot / symbol lookup / cross-language refactor queries, imperative body, concrete examples for Python↔Rust (pyo3), TS↔Go (gRPC), and C embedded in anything. No position-counting from text in examples.

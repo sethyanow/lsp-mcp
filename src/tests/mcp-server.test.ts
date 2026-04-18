@@ -1,16 +1,26 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createMcpServer } from '../mcp-server';
-import { Router } from '../router';
+import { Router, type ManifestEntry } from '../router';
 import type { LspServer } from '../lsp-server';
 import type { PluginManifest } from '../types';
 import { SymbolKind } from '../types';
 import { minimatch } from 'minimatch';
 
+function entriesFrom(servers: LspServer[]): ManifestEntry[] {
+    return servers.map((s) => ({ manifest: s.manifest, server: s }));
+}
+
 // ---- Mock helpers ----------------------------------------------------------
 
 interface MockOpts {
     callHierarchy?: boolean;
+    name?: string;
+}
+
+let mockCounter = 0;
+function nextMockName(): string {
+    return `mock-${mockCounter++}`;
 }
 
 function makeMockServer(
@@ -19,7 +29,7 @@ function makeMockServer(
     opts: MockOpts = {}
 ): jest.Mocked<LspServer> {
     const manifest: PluginManifest = {
-        name: 'mock',
+        name: opts.name ?? nextMockName(),
         version: '0.1.0',
         langIds,
         fileGlobs,
@@ -76,7 +86,7 @@ function textOf(result: { content: unknown }): string {
 
 describe('MCP server tool registration', () => {
     it('registers the core tools', async () => {
-        const router = new Router([]);
+        const router = new Router(entriesFrom([]));
         const { client, teardown } = await buildClientServer(router);
         try {
             const { tools } = await client.listTools();
@@ -94,7 +104,7 @@ describe('MCP server tool registration', () => {
     });
 
     it('registers call-hierarchy tools when any server declares the capability', async () => {
-        const router = new Router([makeMockServer(['python'], ['**/*.py'], { callHierarchy: true })]);
+        const router = new Router(entriesFrom([makeMockServer(['python'], ['**/*.py'], { callHierarchy: true })]));
         const { client, teardown } = await buildClientServer(router);
         try {
             const { tools } = await client.listTools();
@@ -117,7 +127,7 @@ describe('symbol_search tool', () => {
     beforeAll(async () => {
         pyServer = makeMockServer(['python'], ['**/*.py']);
         tsServer = makeMockServer(['typescript'], ['**/*.ts']);
-        const router = new Router([pyServer, tsServer]);
+        const router = new Router(entriesFrom([pyServer, tsServer]));
         ({ client, teardown } = await buildClientServer(router));
     });
 
@@ -216,7 +226,7 @@ describe('defs tool', () => {
 
     beforeAll(async () => {
         pyServer = makeMockServer(['python'], ['**/*.py']);
-        const router = new Router([pyServer]);
+        const router = new Router(entriesFrom([pyServer]));
         ({ client, teardown } = await buildClientServer(router));
     });
 
@@ -278,7 +288,7 @@ describe('refs / impls / outline / hover tools', () => {
 
     beforeAll(async () => {
         pyServer = makeMockServer(['python'], ['**/*.py']);
-        const router = new Router([pyServer]);
+        const router = new Router(entriesFrom([pyServer]));
         ({ client, teardown } = await buildClientServer(router));
     });
 
@@ -351,7 +361,7 @@ describe('diagnostics tool', () => {
 
     beforeAll(async () => {
         pyServer = makeMockServer(['python'], ['**/*.py']);
-        const router = new Router([pyServer]);
+        const router = new Router(entriesFrom([pyServer]));
         ({ client, teardown } = await buildClientServer(router));
     });
 
@@ -396,7 +406,7 @@ describe('lsp escape hatch', () => {
 
     beforeAll(async () => {
         pyServer = makeMockServer(['python'], ['**/*.py']);
-        const router = new Router([pyServer]);
+        const router = new Router(entriesFrom([pyServer]));
         ({ client, teardown } = await buildClientServer(router));
     });
 
@@ -438,6 +448,110 @@ describe('lsp escape hatch', () => {
             expect(result.isError).toBe(true);
         } finally {
             stderrSpy.mockRestore();
+        }
+    });
+});
+
+describe('Tool schemas expose via/manifests', () => {
+    let client: Client;
+    let teardown: () => Promise<void>;
+    let pyServer: jest.Mocked<LspServer>;
+    let router: Router;
+
+    beforeAll(async () => {
+        pyServer = makeMockServer(['python'], ['**/*.py'], {
+            name: 'pyright',
+            callHierarchy: true,
+        });
+        router = new Router(entriesFrom([pyServer]));
+        ({ client, teardown } = await buildClientServer(router));
+    });
+
+    afterAll(() => teardown());
+
+    it('positional tools accept optional via in inputSchema', async () => {
+        const { tools } = await client.listTools();
+        const positional = [
+            'defs', 'refs', 'impls', 'hover', 'outline', 'diagnostics', 'lsp',
+            'call_hierarchy_prepare', 'incoming_calls', 'outgoing_calls',
+        ];
+        for (const name of positional) {
+            const tool = tools.find((t) => t.name === name);
+            expect(tool).toBeDefined();
+            const schema = tool!.inputSchema as {
+                properties?: Record<string, unknown>;
+                required?: string[];
+            };
+            expect(schema.properties?.via).toBeDefined();
+            expect(schema.required ?? []).not.toContain('via');
+        }
+    });
+
+    it('symbol_search accepts optional manifests (array of strings)', async () => {
+        const { tools } = await client.listTools();
+        const tool = tools.find((t) => t.name === 'symbol_search');
+        const schema = tool!.inputSchema as {
+            properties?: Record<string, { type?: string; items?: { type?: string } }>;
+            required?: string[];
+        };
+        expect(schema.properties?.manifests?.type).toBe('array');
+        expect(schema.properties?.manifests?.items?.type).toBe('string');
+        expect(schema.required ?? []).not.toContain('manifests');
+    });
+
+    it('defs tool forwards via to router.definitions as (file, pos, via)', async () => {
+        const spy = jest.spyOn(router, 'definitions').mockResolvedValue([]);
+        try {
+            await client.callTool({
+                name: 'defs',
+                arguments: {
+                    file: 'file:///x.py',
+                    pos: { line: 1, character: 2 },
+                    via: 'pyright',
+                },
+            });
+            expect(spy).toHaveBeenCalledWith(
+                'file:///x.py',
+                { line: 1, character: 2 },
+                'pyright'
+            );
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it('refs tool forwards via to router.references as (file, pos, true, via)', async () => {
+        const spy = jest.spyOn(router, 'references').mockResolvedValue([]);
+        try {
+            await client.callTool({
+                name: 'refs',
+                arguments: {
+                    file: 'file:///x.py',
+                    pos: { line: 1, character: 2 },
+                    via: 'pyright',
+                },
+            });
+            expect(spy).toHaveBeenCalledWith(
+                'file:///x.py',
+                { line: 1, character: 2 },
+                true,
+                'pyright'
+            );
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it('symbol_search tool forwards manifests to router.symbolSearch', async () => {
+        const spy = jest.spyOn(router, 'symbolSearch').mockResolvedValue([]);
+        try {
+            await client.callTool({
+                name: 'symbol_search',
+                arguments: { name: 'Foo', manifests: ['pyright'] },
+            });
+            expect(spy).toHaveBeenCalledWith('Foo', undefined, ['pyright']);
+        } finally {
+            spy.mockRestore();
         }
     });
 });
