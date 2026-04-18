@@ -8,6 +8,7 @@ parent: lspm-cnq
 ---
 
 
+
 ## Context
 
 Fourth task in Phase 1 sub-epic `lspm-cnq`, parent epic `lspm-y5n`. Predecessors: `lspm-z4z` closed R4 (multi-candidate router + `via?` / `manifests?` params), `lspm-177` closed R2 (12 built-in manifests at repo-root `manifests/`, dormant until a loader lands).
@@ -163,9 +164,13 @@ function mergeDiscoveryPipeline(sources: DiscoveredManifest[][]): DiscoveredMani
 
 Router's first-registered-wins primary logic is preserved because Map iteration order = insertion order, and `set()` on an existing key keeps the original slot.
 
-### Behavior on malformed built-in defaults
+### Behavior on malformed / missing built-in defaults
 
-A malformed shipped file is a bug, but must not brick startup. `discoverBuiltinManifests` logs to stderr and skips the file on Zod failure or JSON parse failure. Same policy for `discoverConfigFileManifests` — except preserves existing `resolveManifests` behavior (which currently `process.exit(1)`s on invalid config). Open question during SRE: should config-file failures still hard-exit, or soft-skip like builtin? Recommend hard-exit for user-authored config (user expects correctness) and soft-skip for shipped defaults (ship-side bug shouldn't block end user). Decision deferred to implementation; note both options in implementation step.
+A malformed shipped file is a bug, but must not brick startup. `discoverBuiltinManifests` logs to stderr and skips the file on Zod failure or JSON parse failure.
+
+**Directory-absent case:** if `manifests/` does not exist at the resolved path (bundler drift, corrupted install, tree relocation), `discoverBuiltinManifests` returns `[]` after emitting a single stderr warning. The server starts with whatever other sources provide; it does NOT throw. `existsSync(BUILTIN_DIR)` before `readdirSync`.
+
+**Config-file (user-authored) policy — locked:** preserve current `resolveManifests` `process.exit(1)` on JSON parse / Zod validation failure. User config correctness is the user's responsibility; hard-exit with a clear message is the expected behavior. Do NOT soft-skip — that would silently degrade a typo'd config and confuse the user. The asymmetry with built-in soft-skip is intentional: shipped bugs are ours, config bugs are theirs.
 
 ### Observability log
 
@@ -189,7 +194,7 @@ Run: `bun run test -- --testPathPattern=discover` → expect module-not-found fa
 
 ### Step 2 — GREEN: implement `discoverBuiltinManifests`
 
-Create `src/discover.ts`. Export `SourceKind`, `DiscoveredManifest`, `discoverBuiltinManifests`. Use `path.resolve(__dirname, '../manifests')`, read with `readdirSync(dir, { withFileTypes: true })`, filter `isFile() && name.endsWith('.json')`, sort alphabetically, Zod `safeParse` each via `PluginManifestSchema`, attach `sourceKind: "builtin"` + `sourcePath: <full file path>`. Invalid file → stderr log + skip (don't throw).
+Create `src/discover.ts`. Export `SourceKind`, `DiscoveredManifest`, `discoverBuiltinManifests`. Use `path.resolve(__dirname, '../manifests')`, guard with `existsSync(dir)` → if absent, emit one stderr warning and return `[]` (directory-absent case from Design § "Behavior on malformed / missing built-in defaults"). Otherwise read with `readdirSync(dir, { withFileTypes: true })`, filter `isFile() && name.endsWith('.json')`, sort alphabetically, Zod `safeParse` each via `PluginManifestSchema`, attach `sourceKind: "builtin"` + `sourcePath: <full file path>`. Invalid file → stderr log + skip (don't throw).
 
 Run filtered test → 12 entries, green.
 
@@ -201,9 +206,9 @@ Extend `discover.test.ts`. New `describe('discoverConfigFileManifests')`. Tests:
 
 Run → expect function-not-defined failure.
 
-### Step 4 — GREEN: port loader + decide malformed-policy
+### Step 4 — GREEN: port loader (preserve hard-exit policy)
 
-Port `loadManifests` + `resolveManifests` logic from `src/config.ts` into `src/discover.ts:discoverConfigFileManifests`. Attach `sourceKind` + `sourcePath`. Keep hard-exit on parse/schema failure for user-authored config OR switch to soft-skip (decide during implementation; document which in commit message). Delete `src/config.ts` AND `src/tests/config.test.ts` — port the 2 existing config tests into `discover.test.ts` if still relevant (1 already duplicated by Step 3 test 1).
+Port `loadManifests` + `resolveManifests` logic from `src/config.ts` into `src/discover.ts:discoverConfigFileManifests`. Attach `sourceKind: "config-file"` + `sourcePath: configPath`. **Keep hard-exit** (`process.exit(1)`) on JSON parse failure and Zod schema failure for user-authored config — matches current behavior, locked by Design § "Behavior on malformed / missing built-in defaults". Delete `src/config.ts` AND `src/tests/config.test.ts` — port the 2 existing config tests into `discover.test.ts` if still relevant (test 1 "missing file" is already covered by Step 3 test 1; test 2 "valid file" is already covered by Step 3 test 2 — both can be dropped without coverage loss).
 
 Run discovery tests → green.
 
@@ -214,6 +219,8 @@ Extend `discover.test.ts`. Test: `discoverManifests({ configPath })` where `conf
 Also test: unique config-file entries (e.g., a custom `my-lsp` manifest) appear alongside builtins with no conflict log.
 
 Also test: zero-config-file case (missing `configPath`) returns exactly the 12 builtins, all tagged `builtin`.
+
+**Primary-stability-across-collision test** (from Failure Catalog + Key Considerations): construct `new Router(entriesFrom(discoverManifests({ configPath })))` where `configPath` overrides `bazel-lsp` with a new version of the same manifest (same `langIds: ["starlark", ...]`). Assert `router.primaryForLang("starlark")?.manifest.name === "bazel-lsp"` — Map-insertion-order preservation means the overridden entry keeps `bazel-lsp`'s registration slot (it was first in the alphabetical built-in sort), so the primary remains `bazel-lsp` not `starpls`. This locks down the invariant that `Map.set` on an existing key does not reshuffle slots.
 
 Run → expect `discoverManifests` undefined.
 
@@ -324,11 +331,12 @@ Both new tasks block `lspm-cnq` (sub-epic). Layered-discovery SC bullet stays un
 - [ ] `src/config.ts` and `src/tests/config.test.ts` deleted (or `config.ts` reduced to pure re-export of `discover.ts` if kept for back-compat — prefer deletion per CLAUDE.md).
 - [ ] `src/index.ts` calls `discoverManifests({ configPath })` instead of `resolveManifests(configPath)`; builds `ManifestEntry[]` with `sourceKind` propagated; emits the `[lsp-mcp] loaded N manifests (...)` observability line at startup.
 - [ ] Built-in defaults loader: `path.resolve(__dirname, '../manifests')`, `withFileTypes` + `.json` filter + alphabetical `.sort()` + Zod `safeParse` + skip-on-invalid.
-- [ ] Config-file loader: behavior preserved (empty-array + stderr notice when file absent); malformed handling decision documented in commit message.
+- [ ] Config-file loader: behavior preserved — empty-array + stderr notice when file absent; `process.exit(1)` on JSON parse or Zod schema failure (matches current `resolveManifests` behavior; locked per Design decision).
+- [ ] Built-in loader: `existsSync(BUILTIN_DIR)` guard returns `[]` with one stderr warning when `manifests/` directory is absent.
 - [ ] Merge function: later source wins on name collision; stderr line format `[lsp-mcp] manifest "<name>" from <sourceKind> (<path>) overrides prior <sourceKind> (<path>).`.
 - [ ] Map-based dedup preserves registration slot → Router's first-registered-wins primary logic still produces `bazel-lsp` as the `starlark` primary (alphabetical order guarantees this across platforms).
 - [ ] Zero-env smoke test: `echo '' | node dist/index.js` prints the observability line confirming 12 builtin manifests; no "zero manifests" warning.
-- [ ] New discovery tests cover: 12-builtin load, alphabetical order, sourceKind propagation, missing config-file fallback, valid config-file load, name-collision override with stderr log, unique config-file additions.
+- [ ] New discovery tests cover: 12-builtin load, alphabetical order, sourceKind propagation, missing config-file fallback, valid config-file load, name-collision override with stderr log, unique config-file additions, primary-stability across collision (bazel-lsp/starpls invariant).
 - [ ] `bun run test` green (baseline 112 + new discovery tests; final count logged to `bn log lspm-h1n`).
 - [ ] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`.
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit message references `lspm-h1n`, enumerates out-of-scope R8b (LSP_MCP_MANIFESTS_DIR) / R8c (plugin-tree glob), notes malformed-default policy decision.
@@ -387,3 +395,4 @@ Both new tasks block `lspm-cnq` (sub-epic). Layered-discovery SC bullet stays un
 ## Log
 
 - [2026-04-18T08:50:33Z] [Seth] Scoped via writing-plans post-lspm-177 close (2026-04-18). User picked R8 (layered manifest discovery) over R3/R9/R5+R6 at checkpoint. Decomposed R8 into three sequential tasks per CLAUDE.md 'one cohesion seam per task': R8a (this) = pipeline + built-in defaults + sourceKind + LSP_MCP_CONFIG refactor + index.ts wire-up; R8b = LSP_MCP_MANIFESTS_DIR source (follow-up); R8c = CLAUDE_PLUGIN_ROOT plugin-tree glob (follow-up). Sub-epic layered-discovery SC bullet unchecked until all three land. Codebase-verified starting state: resolveManifests at config.ts:31 used only by index.ts:35 + config.test.ts; three test helpers construct ManifestEntry (router/mcp-server/e2e test files) needing sourceKind migration. Correction noted: lspm-cnq Key Consideration says 'fileURLToPath(import.meta.url)' but build format is CJS — R8a uses __dirname. Decision deferred to implementation: malformed-policy for user config (hard-exit vs soft-skip) — recommend preserving current hard-exit. Ready for fresh-session SRE.
+- [2026-04-18T09:31:10Z] [Seth] SRE fresh-session review (2026-04-18): spot-checked 8 skeleton claims against codebase — all verified (config.ts:31 resolveManifests, index.ts:22/35/46-49, router.ts:10-13 ManifestEntry, three entriesFrom at router/mcp-server/e2e test files, 12 manifests at repo root, 2 config.test.ts tests, CJS build via bun --format cjs + package.json has no type:module, fileURLToPath only used for URI conversion not module location). Applied all 10 SRE categories. Three gap-fills added (no redesigns): (1) Step 4 malformed-policy 'deferred to implementation' resolved — locked to preserve hard-exit for user config (matches current behavior, skeleton's own recommendation); (2) Step 2 made directory-absent case explicit — existsSync guard returns [] with stderr warning when manifests/ missing; (3) primary-stability-across-collision test added to Step 5 — asserts bazel-lsp stays primary for starlark when config-file overrides bazel-lsp entry, locks Map.set-preserves-slot invariant named in Failure Catalog + Key Considerations. SC updated with two new checkboxes. No anti-pattern or design choice changes. Ready for adversarial-planning (Step 1a).
