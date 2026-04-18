@@ -1,12 +1,13 @@
 ---
 id: lspm-177
 title: R2 — built-in manifest library for 12 default LSPs
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
 
 
 
@@ -300,19 +301,19 @@ git push
 
 ## Success Criteria
 
-- [ ] `manifests/` directory exists at repo root.
-- [ ] Exactly 12 JSON files present: `pyright.json`, `typescript-language-server.json`, `gopls.json`, `rust-analyzer.json`, `zls.json`, `clangd.json`, `lua-language-server.json`, `elixir-ls.json`, `svelte-language-server.json`, `bash-language-server.json`, `starpls.json`, `bazel-lsp.json`.
-- [ ] Each file parses cleanly against `PluginManifestSchema` (Zod) — no validation errors.
-- [ ] For each file, `parsed.name + ".json"` equals the filename (consistency invariant R8 can rely on).
-- [ ] `starpls.json` and `bazel-lsp.json` both include `"starlark"` in `langIds` (Bazel coherence).
-- [ ] Every `server.cmd[0]` is a bare binary name, not an absolute path. *(Programmatically enforced by test 6 — added post-adversarial stress test.)*
-- [ ] `capabilities.workspaceSymbol` and `capabilities.callHierarchy` reflect each LSP's documented/researched behavior; uncertain cases omit the field rather than guess. Research notes logged via `bn log lspm-177`.
-- [ ] `src/tests/manifests-library.test.ts` exists with 6 tests covering: directory presence, schema conformance, 12 canonical manifests present, filename-matches-name, bare-cmd invariant (adversarial), starlark coherence. All green.
-- [ ] No changes to `src/router.ts`, `src/config.ts`, `src/mcp-server.ts`, `src/index.ts`, `src/types.ts`, or any other existing file outside the new test file.
-- [ ] `bun run test` green (all 106 pre-existing + 6 new = 112 total).
-- [ ] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`.
-- [ ] `echo '' | node dist/index.js` still logs zero-manifest notice (R8 not implemented; manifests dormant).
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit message references `lspm-177` and enumerates out-of-scope R3/R5/R6/R7/R8/R9.
+- [x] `manifests/` directory exists at repo root.
+- [x] Exactly 12 JSON files present: `pyright.json`, `typescript-language-server.json`, `gopls.json`, `rust-analyzer.json`, `zls.json`, `clangd.json`, `lua-language-server.json`, `elixir-ls.json`, `svelte-language-server.json`, `bash-language-server.json`, `starpls.json`, `bazel-lsp.json`.
+- [x] Each file parses cleanly against `PluginManifestSchema` (Zod) — no validation errors.
+- [x] For each file, `parsed.name + ".json"` equals the filename (consistency invariant R8 can rely on).
+- [x] `starpls.json` and `bazel-lsp.json` both include `"starlark"` in `langIds` (Bazel coherence).
+- [x] Every `server.cmd[0]` is a bare binary name, not an absolute path. *(Programmatically enforced by test 6 — added post-adversarial stress test.)*
+- [x] `capabilities.workspaceSymbol` and `capabilities.callHierarchy` reflect each LSP's documented/researched behavior; uncertain cases omit the field rather than guess. Research notes logged via `bn log lspm-177`.
+- [x] `src/tests/manifests-library.test.ts` exists with 6 tests covering: directory presence, schema conformance, 12 canonical manifests present, filename-matches-name, bare-cmd invariant (adversarial), starlark coherence. All green.
+- [x] No changes to `src/router.ts`, `src/config.ts`, `src/mcp-server.ts`, `src/index.ts`, `src/types.ts`, or any other existing file outside the new test file.
+- [x] `bun run test` green (all 106 pre-existing + 6 new = 112 total).
+- [x] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`.
+- [x] `echo '' | node dist/index.js` still logs zero-manifest notice (R8 not implemented; manifests dormant).
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit message references `lspm-177` and enumerates out-of-scope R3/R5/R6/R7/R8/R9.
 
 ## Anti-Patterns
 
