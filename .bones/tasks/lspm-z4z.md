@@ -1,12 +1,14 @@
 ---
 id: lspm-z4z
 title: Refactor router to multi-candidate routing with via/manifests params
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
+
 
 
 
@@ -294,7 +296,7 @@ class Router {
 - [x] `bun run test` — all 66 pre-existing tests + new tests for (a) multi-candidate routing map construction + first-registered primary, (b) `primaryForFile` across candidates, (c) `via` on each of 10 positional methods including unknown-name error path, (d) `manifests` scoping including unknown-name skip + stderr log, (e) default-fans-primaries-only, (f) MCP tool schemas expose `via` / `manifests`, (g) MCP tool arg pass-through behavior. **106 tests green.**
 - [x] `bun run typecheck` clean; `bun run build` produces a bundled `dist/index.js`. **0.86MB bundle, 240 modules.**
 - [x] Manual smoke: `echo '' | node dist/index.js` starts, logs zero-manifest notice, exits cleanly without traceback.
-- [ ] Single commit on `dev`, not pushed. Commit message references `lspm-z4z` and enumerates out-of-scope R2/R3/R5/R6/R7/R8/R9.
+- [x] Single commit on `dev`, not pushed. Commit message references `lspm-z4z` and enumerates out-of-scope R2/R3/R5/R6/R7/R8/R9. *(commit f140353)*
 
 ## Anti-Patterns
 
@@ -358,3 +360,4 @@ class Router {
 - [2026-04-17T20:47:57Z] [Seth] Task scoped via writing-plans. Deliberate narrow scope: R4 multi-candidate routing refactor only. Touches src/router.ts, src/mcp-server.ts, src/index.ts + 3 test files (36 call sites migrate from LspServer[] to ManifestEntry[]). Mock factories gain optional name arg to avoid collision under new _byName map. Does NOT implement R2/R3/R5/R6/R7/R8/R9 — 17-step TDD plan with micro-cycles. Next task after close: user decides whether R3 PATH probe or R2 manifest library comes next.
 - [2026-04-18T07:23:22Z] [Seth] SRE pass (fresh session, 2026-04-18). Spot-checked skeleton claims: LOC (278/141/337) ✓, 36 test-file new Router sites (25+7+4) ✓, mock name='mock' collision ✓, router.servers.some call-hierarchy gate ✓, 66/66 baseline ✓. Found: (1) Context said '9 tools' but lists 8 core — fixed to '8 core + 3 gated = 11'. (2) Step 4 needed explicit ManifestEntry type-only import instruction — added. (3) Step 8 refs signature (includeDeclaration before via) — clarified MCP handler must pass (file,pos,true,via) and test spies match 4 args. (4) Step 14 needed note to preserve symbol_search kind post-filter — added. All design choices preserved; only gap-filling clarifications applied. Ready for adversarial-planning.
 - [2026-04-18T07:26:44Z] [Seth] Adversarial-planning pass (2026-04-18). Walked 6 failure categories across 10 components. 3 real findings added to Key Considerations as structured catalog: (1) duplicate manifest.name across entries — last-wins _byName vs first-wins _langMap divergence; mitigate with pre-map dedup in constructor. (2) empty-string via — truthy vs presence check divergence; mitigate with via !== undefined. (3) duplicate names in manifests[] — double-fan waste; mitigate with dedup in explicit branch. All three mitigations are structural (design prevents), not defensive. Two new success criteria added covering dedup + empty-via behavior. No redesign of spec — findings slot into existing Steps 3, 8, 12.
+- [2026-04-18T07:45:57Z] [Seth] Debrief: R4 multi-candidate routing delivered in 17 steps, 106 tests (66 pre-existing + 40 new), single commit f140353 on dev (not pushed). No workarounds. Design decisions that emerged: (1) split _routeFileRequest vs _routeCallHierarchy — different URI resolution semantics; skeleton suggested one helper, impl found two cleaner. (2) _selectSymbolSearchTargets as separate private method — reusable for R5/R6. (3) refs MCP handler passes (file, pos, true, via) — cleanest under includeDeclaration-before-via ordering. TDD violation mid-stream: wrote _selectSymbolSearchTargets in Step 3 without a failing test (caught at Step 10). Reverted + wrote honest RED + re-implemented; cost ~5 min. Reflections: skeleton accuracy very high; only clarification needed was SRE's refs-ordering note. All 3 sub-epic criteria in scope now checked (R4 routing, via?, manifests?). Cross-pollination: _dedupeByName pattern is R8 discovery's shape; setupFanOut fixture generalizes. Memory cycle: no new memories (TDD-violation recovery is generic discipline; other findings are codebase-observable). MEMORY.md claude_code_plugin_cache_layout still accurate. Next task: user decides between R2 (manifest library) vs R3 (PATH probe) — both unblocked now.
