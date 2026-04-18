@@ -8,6 +8,7 @@ parent: lspm-cnq
 ---
 
 
+
 ## Context
 
 Second task in Phase 1 sub-epic `lspm-cnq`, parent epic `lspm-y5n`. Prior task `lspm-501` delivered the root-as-plugin marketplace scaffolding and verified `${CLAUDE_PLUGIN_ROOT}` path resolution empirically.
@@ -19,7 +20,7 @@ This task delivers **R4 only** from the parent epic: the multi-candidate routing
 **Starting state (verified in `src/` on branch `dev`):**
 - `src/router.ts` (278 LOC) stores `_servers: LspServer[]`; routing via array-find through `ownsFile` / `ownsLang`. No candidate/primary concept.
 - `src/types.ts` (141 LOC) has `PluginManifestSchema` via Zod — no `ManifestEntry` yet.
-- `src/mcp-server.ts` (337 LOC) exposes 9 tools (`symbol_search`, `defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, plus 3 gated call-hierarchy tools). None accept `via?` / `manifests?`.
+- `src/mcp-server.ts` (337 LOC) exposes 8 core tools (`symbol_search`, `defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`) plus 3 gated call-hierarchy tools (`call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`) — 11 registered when any manifest declares `capabilities.callHierarchy`, 8 otherwise. None accept `via?` / `manifests?`. Note: `symbol_search` handler already destructures an orthogonal `kind?: string` for post-router filtering (mcp-server.ts:82); Step 14 must preserve that.
 - `src/index.ts` bootstraps: `manifests.map(m => new LspServer(...))` → `new Router(servers)`.
 - `src/config.ts` is untouched by this task (R8 territory).
 - Tests at 66/66 green. `src/tests/router.test.ts` / `mcp-server.test.ts` / `e2e.test.ts` construct `new Router([...])` in 36 places with flat `LspServer[]` — all 36 migrate to `ManifestEntry[]` here.
@@ -134,6 +135,7 @@ class Router {
         return servers.map((s) => ({ manifest: s.manifest, server: s }));
     }
     ```
+- In each of those three test files, extend the existing `import { Router } from '../router';` to include the type-only import: `import { Router, type ManifestEntry } from '../router';`.
 - Replace every `new Router([a, b, ...])` with `new Router(entriesFrom([a, b, ...]))`.
 - For tests that construct two mocks with the same default `'mock'` name AND store both in the same Router (e.g. python-dup test in router.test.ts around lines 109–118; starpls-style A/B tests added in Step 5), pass distinct `name` via `opts`.
 - Command: `bun run test 2>&1 | tee /tmp/lspm-z4z-step4.log` — all 66 pre-existing tests + 4 new from Step 2 green.
@@ -169,7 +171,7 @@ class Router {
     - Else → resolve `filePath` from `fileUri` (existing `fileURLToPath` logic), return `primaryForFile(filePath)`.
 - Rewrite each positional method:
     - `definitions(fileUri, position, via?)`: `entry = _routeFileRequest(fileUri, via)`; if undefined return `[]`; else `_fileRequest(entry.server, fileUri, 'textDocument/definition', buildTextDocParams(fileUri, position), [])`.
-    - `references(fileUri, position, includeDeclaration = true, via?)`: same pattern.
+    - `references(fileUri, position, includeDeclaration = true, via?)`: same pattern. NOTE: `via` is the 4th positional slot (after the defaulted `includeDeclaration`); the MCP `refs` handler must explicitly pass `true` to reach it: `router.references(file, pos, true, via)`. Tests that assert pass-through on `refs` must match 4-arg calls.
     - `implementations(fileUri, position, via?)`: same.
     - `hover(fileUri, position, via?)`: same.
     - `documentSymbols(fileUri, via?)`: same.
@@ -216,14 +218,14 @@ class Router {
 - File: `src/tests/mcp-server.test.ts`. New `describe('Tool schemas expose via/manifests')`.
 - Test "positional tools accept optional via": call `client.listTools()`; for each of `defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`, assert `tool.inputSchema.properties.via` exists and is not in `tool.inputSchema.required`.
 - Test "symbol_search accepts optional manifests": assert `tool.inputSchema.properties.manifests` exists (type array, items string), not required.
-- Test "via passes through": wire a spy on `router.definitions`; invoke the `defs` tool via client with `via: 'pyright-fork'`; assert spy called with `(file, pos, 'pyright-fork')`. Repeat for one other positional tool (e.g. `refs`) to guard against per-tool regressions.
+- Test "via passes through": wire a spy on `router.definitions`; invoke the `defs` tool via client with `via: 'pyright-fork'`; assert spy called with `(file, pos, 'pyright-fork')` (3 args — `defs` signature). Repeat for `refs` to guard against per-tool regressions — `refs` spy must match 4 args: `(file, pos, true, 'pyright-fork')` because `references` has `includeDeclaration = true` as the defaulted 3rd positional slot.
 - Test "manifests passes through": spy on `router.symbolSearch`; invoke `symbol_search` tool with `manifests: ['pyright-fork']`; assert spy called with `(name, undefined, ['pyright-fork'])`.
 - Command: `bun run test -- --testPathPattern=mcp-server.test` — expect red on schema property checks.
 
 ### Step 14 — GREEN: add via/manifests to MCP tool schemas
 
 - File: `src/mcp-server.ts`. For each positional tool (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`): add `via: z.string().optional().describe('Manifest name to target (overrides primary routing).')` to `inputSchema`. Destructure `via` in handler; forward to the router call. Inline comment: `// R7 (downstream task): replace with z.enum() over active manifest names.`
-- For `symbol_search`: add `manifests: z.array(z.string()).optional().describe('Restrict search to specific manifest names (overrides primary-only fan-out).')`. Destructure + forward. Same inline R7 comment.
+- For `symbol_search`: add `manifests: z.array(z.string()).optional().describe('Restrict search to specific manifest names (overrides primary-only fan-out).')`. Destructure `manifests` alongside the existing `{ name, kind, langs }`; preserve the post-router `kind` filtering logic (mcp-server.ts:89–95). New call: `await router.symbolSearch(name, langs, manifests)` — then run the existing `kind` filter against the result. Same inline R7 comment.
 - Command: `bun run test` — Step 13 tests green. Full suite green.
 
 ### Step 15 — GREEN: index.ts bootstrap constructs ManifestEntry[]
@@ -325,3 +327,4 @@ class Router {
 ## Log
 
 - [2026-04-17T20:47:57Z] [Seth] Task scoped via writing-plans. Deliberate narrow scope: R4 multi-candidate routing refactor only. Touches src/router.ts, src/mcp-server.ts, src/index.ts + 3 test files (36 call sites migrate from LspServer[] to ManifestEntry[]). Mock factories gain optional name arg to avoid collision under new _byName map. Does NOT implement R2/R3/R5/R6/R7/R8/R9 — 17-step TDD plan with micro-cycles. Next task after close: user decides whether R3 PATH probe or R2 manifest library comes next.
+- [2026-04-18T07:23:22Z] [Seth] SRE pass (fresh session, 2026-04-18). Spot-checked skeleton claims: LOC (278/141/337) ✓, 36 test-file new Router sites (25+7+4) ✓, mock name='mock' collision ✓, router.servers.some call-hierarchy gate ✓, 66/66 baseline ✓. Found: (1) Context said '9 tools' but lists 8 core — fixed to '8 core + 3 gated = 11'. (2) Step 4 needed explicit ManifestEntry type-only import instruction — added. (3) Step 8 refs signature (includeDeclaration before via) — clarified MCP handler must pass (file,pos,true,via) and test spies match 4 args. (4) Step 14 needed note to preserve symbol_search kind post-filter — added. All design choices preserved; only gap-filling clarifications applied. Ready for adversarial-planning.
