@@ -1,0 +1,13 @@
+{
+    "name": "svelte-language-server",
+    "version": "0.1.0",
+    "langIds": ["svelte"],
+    "fileGlobs": ["**/*.svelte"],
+    "workspaceMarkers": ["svelte.config.js", "svelte.config.ts", "package.json"],
+    "server": {
+        "cmd": ["svelteserver", "--stdio"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "timeoutMs": 5000 }
+    }
+}

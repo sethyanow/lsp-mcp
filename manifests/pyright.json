@@ -1,0 +1,14 @@
+{
+    "name": "pyright",
+    "version": "0.1.0",
+    "langIds": ["python"],
+    "fileGlobs": ["**/*.py", "**/*.pyi"],
+    "workspaceMarkers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json"],
+    "server": {
+        "cmd": ["pyright-langserver", "--stdio"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 },
+        "callHierarchy": true
+    }
+}

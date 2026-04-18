@@ -1,0 +1,14 @@
+{
+    "name": "gopls",
+    "version": "0.1.0",
+    "langIds": ["go"],
+    "fileGlobs": ["**/*.go"],
+    "workspaceMarkers": ["go.mod", "go.work"],
+    "server": {
+        "cmd": ["gopls"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 },
+        "callHierarchy": true
+    }
+}

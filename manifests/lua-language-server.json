@@ -1,0 +1,14 @@
+{
+    "name": "lua-language-server",
+    "version": "0.1.0",
+    "langIds": ["lua"],
+    "fileGlobs": ["**/*.lua"],
+    "workspaceMarkers": [".luarc.json", ".luarc.jsonc", "stylua.toml", ".stylua.toml"],
+    "server": {
+        "cmd": ["lua-language-server"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 },
+        "callHierarchy": true
+    }
+}

@@ -1,0 +1,23 @@
+{
+    "name": "typescript-language-server",
+    "version": "0.1.0",
+    "langIds": ["typescript", "typescriptreact", "javascript", "javascriptreact"],
+    "fileGlobs": [
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.mts",
+        "**/*.cts",
+        "**/*.js",
+        "**/*.jsx",
+        "**/*.mjs",
+        "**/*.cjs"
+    ],
+    "workspaceMarkers": ["tsconfig.json", "jsconfig.json", "package.json"],
+    "server": {
+        "cmd": ["typescript-language-server", "--stdio"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 },
+        "callHierarchy": true
+    }
+}

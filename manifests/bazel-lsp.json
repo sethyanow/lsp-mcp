@@ -1,0 +1,21 @@
+{
+    "name": "bazel-lsp",
+    "version": "0.1.0",
+    "langIds": ["starlark"],
+    "fileGlobs": [
+        "**/*.star",
+        "**/*.bzl",
+        "**/BUILD",
+        "**/BUILD.bazel",
+        "**/WORKSPACE",
+        "**/WORKSPACE.bazel",
+        "**/MODULE.bazel"
+    ],
+    "workspaceMarkers": ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"],
+    "server": {
+        "cmd": ["bazel-lsp"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "timeoutMs": 5000 }
+    }
+}

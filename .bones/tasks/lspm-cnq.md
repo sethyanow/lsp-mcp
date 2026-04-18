@@ -33,7 +33,7 @@ Out of Phase 1 (→ Phase 2, `lspm-erd`): fork wrappers, `.local.md` settings, `
 
 - [x] `.claude-plugin/marketplace.json` exists at repo root and validates against the CC marketplace schema. *(satisfied by `lspm-501`; schema accepts `source: "./"` and plugin installs cleanly)*
 - [x] `.claude-plugin/plugin.json` exists at repo root with `mcpServers` inlined (path: `${CLAUDE_PLUGIN_ROOT}/dist/index.js`); path resolution empirically verified under CC marketplace install. *(satisfied by `lspm-501` commit 633ea50 — `/mcp` shows `lsp` connected; MCP tool calls route successfully)*
-- [ ] `manifests/` (at repo root) contains a JSON manifest for each of: pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, lua-language-server, elixir-ls, svelte-language-server, bash-language-server, starpls, bazel-lsp.
+- [x] `manifests/` (at repo root) contains a JSON manifest for each of: pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, lua-language-server, elixir-ls, svelte-language-server, bash-language-server, starpls, bazel-lsp. *(satisfied by `lspm-177` — 12 files, schema-conformant, 6-test validation battery; data dormant until R8 layered discovery lands)*
 - [x] Router routing model is `Map<langId, { candidates: ManifestEntry[], primary: string }>`; 1:1 hardcoding removed from all tool handlers. *(satisfied by `lspm-z4z`)*
 - [ ] PATH probe at startup sets `status: "ok" | "binary_not_found"` per manifest; only `ok` manifests join the routing map; all are visible to `list_languages`.
 - [ ] `list_languages` MCP tool returns `{lang, manifest, primary: bool, status, capabilities}[]`.

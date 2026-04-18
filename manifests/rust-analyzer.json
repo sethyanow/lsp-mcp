@@ -1,0 +1,14 @@
+{
+    "name": "rust-analyzer",
+    "version": "0.1.0",
+    "langIds": ["rust"],
+    "fileGlobs": ["**/*.rs"],
+    "workspaceMarkers": ["Cargo.toml", "Cargo.lock", "rust-project.json"],
+    "server": {
+        "cmd": ["rust-analyzer"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 },
+        "callHierarchy": true
+    }
+}

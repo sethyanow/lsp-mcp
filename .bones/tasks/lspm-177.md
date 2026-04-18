@@ -1,11 +1,17 @@
 ---
 id: lspm-177
 title: R2 — built-in manifest library for 12 default LSPs
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
+
+
+
 
 
 
@@ -202,7 +208,7 @@ No code written this step. The table in the Design section is a starting point �
 File: `src/tests/manifests-library.test.ts`. Add `describe('manifests/ library')` with tests:
 
 1. **"manifests/ directory exists at repo root"** — assert `fs.existsSync(path.resolve(__dirname, '../../manifests'))` is `true`.
-2. **"every JSON file parses against PluginManifestSchema"** — iterate `fs.readdirSync('manifests/').filter(f => f.endsWith('.json'))`; for each, `PluginManifestSchema.parse(JSON.parse(fs.readFileSync(...)))`. Any Zod error fails the test with the filename + field path.
+2. **"every JSON file parses against PluginManifestSchema"** — iterate `fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile() && e.name.endsWith('.json'))` (withFileTypes guards against EISDIR on a `foo.json` subdirectory — see Failure Catalog). For each, `PluginManifestSchema.parse(JSON.parse(fs.readFileSync(...)))`. Any Zod error fails the test with the filename + field path.
 3. **"all 12 canonical manifests are present"** — hardcoded list:
     ```ts
     const CANONICAL = [
@@ -257,7 +263,7 @@ Create 4 more. `capabilities` conservative per table (omit `callHierarchy` for z
 
 Create 3 more. **starpls and bazel-lsp both declare `langIds: ["starlark"]`** — the Bazel coherence decision is structural in this step.
 
-- Command: `bun run test 2>&1 | tail -10` — all tests green across the suite (old 106 + new 5 = 111).
+- Command: `bun run test > /tmp/lspm-177-test.log 2>&1; tail -15 /tmp/lspm-177-test.log` — full suite redirected to file per CLAUDE.md (no stdout dumps); tail only for inspection. Expected: 5 passed, 111 total.
 
 ### Step 7 — Verify typecheck + build + smoke
 
@@ -299,11 +305,11 @@ git push
 - [ ] Each file parses cleanly against `PluginManifestSchema` (Zod) — no validation errors.
 - [ ] For each file, `parsed.name + ".json"` equals the filename (consistency invariant R8 can rely on).
 - [ ] `starpls.json` and `bazel-lsp.json` both include `"starlark"` in `langIds` (Bazel coherence).
-- [ ] Every `server.cmd[0]` is a bare binary name, not an absolute path.
+- [ ] Every `server.cmd[0]` is a bare binary name, not an absolute path. *(Programmatically enforced by test 6 — added post-adversarial stress test.)*
 - [ ] `capabilities.workspaceSymbol` and `capabilities.callHierarchy` reflect each LSP's documented/researched behavior; uncertain cases omit the field rather than guess. Research notes logged via `bn log lspm-177`.
-- [ ] `src/tests/manifests-library.test.ts` exists with 5 tests covering: directory presence, schema conformance, 12 canonical manifests present, filename-matches-name, starlark coherence. All green.
+- [ ] `src/tests/manifests-library.test.ts` exists with 6 tests covering: directory presence, schema conformance, 12 canonical manifests present, filename-matches-name, bare-cmd invariant (adversarial), starlark coherence. All green.
 - [ ] No changes to `src/router.ts`, `src/config.ts`, `src/mcp-server.ts`, `src/index.ts`, `src/types.ts`, or any other existing file outside the new test file.
-- [ ] `bun run test` green (all 106 pre-existing + 5 new = 111 total).
+- [ ] `bun run test` green (all 106 pre-existing + 6 new = 112 total).
 - [ ] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`.
 - [ ] `echo '' | node dist/index.js` still logs zero-manifest notice (R8 not implemented; manifests dormant).
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit message references `lspm-177` and enumerates out-of-scope R3/R5/R6/R7/R8/R9.
@@ -334,6 +340,28 @@ git push
 - **No skill/scripts fields populated.** Phase 1's `using-lsp-mcp` skill ships as a single workspace-level skill (R9), not per-manifest. Per-manifest skills are Phase 2 (`lspm-erd`) fork-wrapper territory.
 - **`bun build` and static assets.** `bun build ./src/index.ts --outdir ./dist` does NOT copy non-imported files into `dist/`. R8's loader will read `manifests/` relative to `dist/index.js`'s sibling path (per `lspm-cnq` "Built-in defaults dir path" key consideration). The manifests/ stays at repo root, unbundled. Confirm after this task: `ls dist/` shows only `index.js` + sourcemap (no manifests copied).
 
+## Failure Catalog (Adversarial Planning)
+
+Derived pre-implementation; only failure modes with non-trivial mitigations are listed. Everything else (encoding, temporal, dependency, resource) folds to N/A for static data + one test file.
+
+**Manifests directory — stray entries**
+- Assumption: `manifests/` contains exactly 12 `.json` files keyed by the canonical name list.
+- Betrayal: A 13th well-formed manifest is dropped in (e.g., `python-lsp-server.json`). Tests 2 (schema) and 4 (filename = name) pass; test 3 (12-canonical-present) also passes because it only asserts presence, not exclusivity.
+- Consequence: Silent scope creep — anti-pattern #6 ("NO 13th manifest") is enforced only at code-review time, not programmatically.
+- Mitigation: Accepted limitation for R2 (tightening to exact-match would make the test brittle under R8's layered-discovery expansion). Commit-time diff review is the gate.
+
+**Manifests directory — subdirectory with `.json` suffix**
+- Assumption: Every `.json` entry in `manifests/` is a regular file.
+- Betrayal: A subdirectory named `foo.json` (unusual but possible — editor backup dir, platform oddities) trips `fs.readdirSync` → `readFileSync` with EISDIR.
+- Consequence: Test 2 crashes with a platform-specific error instead of a clear validation failure.
+- Mitigation: Use `fs.readdirSync(dir, { withFileTypes: true })` and filter `entry.isFile() && entry.name.endsWith('.json')`. One line; structural fix in test 2.
+
+**Bazel coherence — primary selection depends on R8 discovery order**
+- Assumption: R8 iterates `manifests/` alphabetically, so `bazel-lsp` registers before `starpls` and becomes primary for the `starlark` langId.
+- Betrayal: R8 may use `fs.readdirSync` default order (FS-dependent on macOS APFS, Linux ext4, etc.) rather than alphabetical sort.
+- Consequence: Default primary for Starlark differs by platform; user-visible but not broken (both candidates are valid LSPs; `via?` param overrides).
+- Mitigation: Out of scope for R2 (data-only task). R8 task must commit to a deterministic iteration order (explicit `.sort()`) so primary assignment is stable across platforms. Flagged for R8 scoping.
+
 ## Dependencies
 
 - **Blocks:** `lspm-cnq` (Phase 1 sub-epic).
@@ -345,3 +373,6 @@ git push
 - [2026-04-18] Task scoped via writing-plans after `lspm-z4z` closed. User picked R2 over R3/R8/R5+R6 via checkpoint question. Narrow scope: 12 JSON files + 1 test file. 0 src/ file changes. Research burden: verify each LSP's capabilities against the Design table via docs/README. Bazel coherence (shared `langIds: ["starlark"]`) is the main structural decision.
 - [2026-04-18T07:54:47Z] [Seth] Scoped via writing-plans post-lspm-z4z close (2026-04-18). User picked R2 over R3/R8/R5+R6. Narrow scope: 12 JSON files at repo-root manifests/ + 1 new test file (src/tests/manifests-library.test.ts). Zero src/ file changes beyond the new test. Bazel coherence decision baked in: starpls + bazel-lsp both declare langIds: ["starlark"] so they become multi-candidates under R4 routing. Data is dormant until R8 lands a loader. Capabilities conservative (omit when uncertain; over-claim causes runtime errors).
 - [2026-04-18T07:58:33Z] [Seth] Corrected Step 8 + SC #final: skeleton no longer says 'do not push'. CLAUDE.md rule wins: commit+push when tests pass, bare git push. The 'not pushed' pattern was propagated from lspm-z4z without being reconsidered; removed here to prevent further propagation.
+- [2026-04-18T08:02:06Z] [Seth] SRE review 2026-04-18: Skeleton claims verified (manifests/ missing, types.ts:13-32 matches, 106/106 baseline, resolveManifests single-file-only, ts-jest CJS supports __dirname). Stack: Jest 29.7.0 via ts-jest node16; --testPathPattern (singular) is correct flag. One gap filled: Step 6 full-suite run updated to redirect output to /tmp/lspm-177-test.log per CLAUDE.md 'never dump full suite to stdout' rule. No design changes; skeleton is implementable end-to-end.
+- [2026-04-18T08:03:44Z] [Seth] Adversarial planning 2026-04-18: Walked 6 categories across 4 components. 3 non-N/A findings: (1) 13th valid manifest accepted by test 3 — accepted as review-time gate, (2) subdirectory named foo.json crashes test 2 with EISDIR — mitigated by withFileTypes filter in Step 2, (3) R8 discovery order determines Bazel primary — R8-scope concern, flag for that task's SRE. No new success criteria needed. Failure Catalog appended to Key Considerations.
+- [2026-04-18T08:10:13Z] [Seth] Adversarial stress test 2026-04-18: Surveyed 12 manifests + test helper. Patterns empty/singular/sparse covered by existing battery; type-boundary via Zod; encoding via JSON.parse. Gap found: SC #6 (bare cmd[0]) had no programmatic enforcement. Added test 6 (bare-binary assertion, rejects '/' or '\\' in cmd[0]). Test went GREEN immediately — Q1/Q2/Q3 traced: bare-default invariant is scoped to manifests/ built-ins, user configs may use absolute paths legitimately, PATH probe (R3) already flagged in lspm-cnq to handle both. Updated SC to reference 6 tests / 112 total. No out-of-scope findings for epic.

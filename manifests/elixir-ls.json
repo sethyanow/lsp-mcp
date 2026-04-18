@@ -1,0 +1,13 @@
+{
+    "name": "elixir-ls",
+    "version": "0.1.0",
+    "langIds": ["elixir"],
+    "fileGlobs": ["**/*.ex", "**/*.exs"],
+    "workspaceMarkers": ["mix.exs"],
+    "server": {
+        "cmd": ["elixir-ls"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 10000 }
+    }
+}

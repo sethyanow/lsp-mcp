@@ -1,0 +1,24 @@
+{
+    "name": "clangd",
+    "version": "0.1.0",
+    "langIds": ["c", "cpp", "objective-c", "objective-cpp"],
+    "fileGlobs": [
+        "**/*.c",
+        "**/*.cc",
+        "**/*.cpp",
+        "**/*.cxx",
+        "**/*.h",
+        "**/*.hh",
+        "**/*.hpp",
+        "**/*.m",
+        "**/*.mm"
+    ],
+    "workspaceMarkers": ["compile_commands.json", "compile_flags.txt", ".clangd"],
+    "server": {
+        "cmd": ["clangd"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 },
+        "callHierarchy": true
+    }
+}

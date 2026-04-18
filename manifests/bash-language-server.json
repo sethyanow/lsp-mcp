@@ -1,0 +1,13 @@
+{
+    "name": "bash-language-server",
+    "version": "0.1.0",
+    "langIds": ["shellscript"],
+    "fileGlobs": ["**/*.sh", "**/*.bash"],
+    "workspaceMarkers": [],
+    "server": {
+        "cmd": ["bash-language-server", "start"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "timeoutMs": 5000 }
+    }
+}

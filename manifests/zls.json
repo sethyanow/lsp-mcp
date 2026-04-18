@@ -1,0 +1,13 @@
+{
+    "name": "zls",
+    "version": "0.1.0",
+    "langIds": ["zig"],
+    "fileGlobs": ["**/*.zig", "**/*.zon"],
+    "workspaceMarkers": ["build.zig", "build.zig.zon"],
+    "server": {
+        "cmd": ["zls"]
+    },
+    "capabilities": {
+        "workspaceSymbol": { "stringPrefilter": true, "timeoutMs": 5000 }
+    }
+}
