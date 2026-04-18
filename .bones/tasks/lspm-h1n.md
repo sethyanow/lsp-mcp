@@ -1,12 +1,13 @@
 ---
 id: lspm-h1n
 title: R8a — discovery pipeline + built-in defaults source
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
 
 
 

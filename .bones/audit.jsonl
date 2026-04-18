@@ -77,3 +77,4 @@
 {"timestamp":"2026-04-18T09:45:43.762015+00:00","actor":"Seth","event_type":"dep_added","task_id":"lspm-cnq","details":{"kind":"blocks","to":"lspm-kgj"}}
 {"timestamp":"2026-04-18T09:45:43.891880+00:00","actor":"Seth","event_type":"dep_added","task_id":"lspm-cnq","details":{"kind":"parent-child","to":"lspm-mcp"}}
 {"timestamp":"2026-04-18T09:45:43.893323+00:00","actor":"Seth","event_type":"dep_added","task_id":"lspm-cnq","details":{"kind":"blocks","to":"lspm-mcp"}}
+{"timestamp":"2026-04-18T09:46:02.423593+00:00","actor":"Seth","event_type":"closed","task_id":"lspm-h1n","details":{"notes":null}}
