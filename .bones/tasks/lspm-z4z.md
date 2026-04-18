@@ -9,6 +9,7 @@ parent: lspm-cnq
 
 
 
+
 ## Context
 
 Second task in Phase 1 sub-epic `lspm-cnq`, parent epic `lspm-y5n`. Prior task `lspm-501` delivered the root-as-plugin marketplace scaffolding and verified `${CLAUDE_PLUGIN_ROOT}` path resolution empirically.
@@ -282,7 +283,9 @@ class Router {
 - [ ] Public accessors present: `primaryForLang(langId)`, `candidatesForLang(langId)`, `primaryForFile(filePath)`, `entry(name)`, `get servers()`, `get entries()`.
 - [ ] Legacy accessors `serverForFile` / `serverForLang` preserved, delegating to primary lookups.
 - [ ] Every positional router method (`definitions`, `references`, `implementations`, `hover`, `documentSymbols`, `diagnostics`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `raw`) accepts optional `via?: string`; unknown `via` throws `Error('No manifest named "${via}"')`; omitted `via` preserves primary routing.
-- [ ] `router.symbolSearch(query, langIds?, manifests?)` — explicit `manifests` scopes fan-out; unknown name skipped with stderr log; default (no `manifests` or empty array) fans across each langId's primary only, deduped by manifest name.
+- [ ] `router.symbolSearch(query, langIds?, manifests?)` — explicit `manifests` scopes fan-out; unknown name skipped with stderr log; explicit-branch also dedupes by manifest name (duplicate inputs fan once); default (no `manifests` or empty array) fans across each langId's primary only, deduped by manifest name.
+- [ ] Router constructor dedupes entries by `manifest.name` with first-wins semantics; duplicate names stderr-log `[lsp-mcp] duplicate manifest name "${name}" — dropping later entry`; `_byName` and `_langMap` both built from the deduped list.
+- [ ] Empty-string `via` routes as unknown name and throws (consistent with any unknown via); presence check uses `via !== undefined`, not truthy.
 - [ ] Every positional MCP tool in `src/mcp-server.ts` declares `via?` in its Zod input schema; `symbol_search` declares `manifests?` as optional string array. Handlers forward to the router. Each added schema field has an inline comment deferring dynamic enums to R7.
 - [ ] `src/index.ts` constructs a `ManifestEntry[]` and passes it to the Router.
 - [ ] `bun run test` — all 66 pre-existing tests + new tests for (a) multi-candidate routing map construction + first-registered primary, (b) `primaryForFile` across candidates, (c) `via` on each of 10 positional methods including unknown-name error path, (d) `manifests` scoping including unknown-name skip + stderr log, (e) default-fans-primaries-only, (f) MCP tool schemas expose `via` / `manifests`, (g) MCP tool arg pass-through behavior.
@@ -318,6 +321,29 @@ class Router {
 - **Test determinism.** Tests that rely on "first-registered is primary" must construct entries in a fixed order. Don't use `Array.sort` on manifests — registration order IS the contract.
 - **`bun run test` with jest.** Running individual test files via `--testPathPattern=router.test` works because jest's default regex matches substrings. Use `bun run test` (not direct `jest`) to pick up the `--forceExit` flag from `package.json`.
 
+### Adversarial failure catalog
+
+- **Duplicate `manifest.name` across entries (Input Hostility — Router construction).**
+    - Assumption: all entries passed to the Router constructor have unique `manifest.name`.
+    - Betrayal: `src/config.ts` enforces no name uniqueness. Future R8 layered discovery will produce collisions by design; even in Phase 1, a user can paste duplicate entries into a single config file.
+    - Consequence: silent invariant divergence. `_byName` uses `new Map(entries.map(e => [e.manifest.name, e]))` which is last-wins — `_byName.get("pyright")` returns the *second* duplicate. `_buildLangMap` iterates in order and sets `primary = "pyright"` on the first occurrence. Result: `primaryForLang('python')` resolves to the *second* entry via `_byName`, but `candidatesForLang('python')[0]` is the *first*. Routing silently points at the wrong server and tests that mock per-entry behavior see cross-wired state.
+    - Mitigation (structural, pre-map): before building `_byName` and `_langMap`, dedupe `_entries` by `manifest.name` with first-wins semantics; stderr-log `[lsp-mcp] duplicate manifest name "${name}" — dropping later entry` for every dropped entry. Factor into a private helper `_dedupeByName(entries)` called once in the constructor; the already-deduped list becomes the authoritative input to all three data structures.
+    - Implementation slot: Step 3 (constructor). Updated test (added to Step 2's describe): "duplicate manifest names are dropped with stderr log" — construct two entries both named `'pyright'`, spy `process.stderr.write`, assert `router.entries.length === 1` and stderr called with the duplicate message.
+
+- **Empty-string `via` (Input Hostility — `_routeFileRequest` and peers).**
+    - Assumption: `via` is either `undefined` or a non-empty manifest name.
+    - Betrayal: Zod `z.string().optional()` accepts `""`; a caller may pass `via: ""` meaning "no override."
+    - Consequence: if the router uses a truthy check (`if (via)`), empty string falls through to primary routing; if it uses a presence check (`via !== undefined`), `_byName.get("")` returns undefined and the router throws `No manifest named ""`. The two branches diverge on semantics.
+    - Mitigation (structural): use `via !== undefined` everywhere `via` is consumed (`_routeFileRequest`, `incomingCalls`, `outgoingCalls`, `raw`). Empty string becomes an unknown name → throws with a clear message — same rule as any other unknown name. Document the check style in the router method body.
+    - Implementation slot: Step 8. Added test (in Step 7's `via parameter` describe): "empty-string via is treated as unknown name and throws" — assert `router.definitions(fileUri, pos, '')` rejects with `/No manifest named/`.
+
+- **Duplicate names in `manifests: [...]` (Input Hostility — `_selectSymbolSearchTargets`).**
+    - Assumption: caller passes a `manifests` array with unique names.
+    - Betrayal: caller passes `manifests: ["pyright", "pyright"]` or two names that resolve to the same entry.
+    - Consequence: `workspaceSymbol` called twice on the same server; extra LSP round-trip; symbols deduped downstream by the existing `seen` set but the wasted call burns wall-clock latency proportional to LSP cold-cache costs.
+    - Mitigation (structural): in the explicit-manifests branch of `_selectSymbolSearchTargets`, dedupe by resolved entry's `manifest.name` before returning. Same rule already applies to the default-primaries branch — extend it to the explicit branch.
+    - Implementation slot: Step 12. Added test (in Step 10's `manifests scoping` describe): "duplicate manifest names are fanned once" — `manifests: ['pyright-fork', 'pyright-fork']`, assert `pyright-fork.workspaceSymbol` called exactly once.
+
 ## Dependencies
 
 - **Blocks:** `lspm-cnq` (Phase 1 sub-epic — this task is parent-of, so closing this advances the sub-epic toward its remaining criteria).
@@ -328,3 +354,4 @@ class Router {
 
 - [2026-04-17T20:47:57Z] [Seth] Task scoped via writing-plans. Deliberate narrow scope: R4 multi-candidate routing refactor only. Touches src/router.ts, src/mcp-server.ts, src/index.ts + 3 test files (36 call sites migrate from LspServer[] to ManifestEntry[]). Mock factories gain optional name arg to avoid collision under new _byName map. Does NOT implement R2/R3/R5/R6/R7/R8/R9 — 17-step TDD plan with micro-cycles. Next task after close: user decides whether R3 PATH probe or R2 manifest library comes next.
 - [2026-04-18T07:23:22Z] [Seth] SRE pass (fresh session, 2026-04-18). Spot-checked skeleton claims: LOC (278/141/337) ✓, 36 test-file new Router sites (25+7+4) ✓, mock name='mock' collision ✓, router.servers.some call-hierarchy gate ✓, 66/66 baseline ✓. Found: (1) Context said '9 tools' but lists 8 core — fixed to '8 core + 3 gated = 11'. (2) Step 4 needed explicit ManifestEntry type-only import instruction — added. (3) Step 8 refs signature (includeDeclaration before via) — clarified MCP handler must pass (file,pos,true,via) and test spies match 4 args. (4) Step 14 needed note to preserve symbol_search kind post-filter — added. All design choices preserved; only gap-filling clarifications applied. Ready for adversarial-planning.
+- [2026-04-18T07:26:44Z] [Seth] Adversarial-planning pass (2026-04-18). Walked 6 failure categories across 10 components. 3 real findings added to Key Considerations as structured catalog: (1) duplicate manifest.name across entries — last-wins _byName vs first-wins _langMap divergence; mitigate with pre-map dedup in constructor. (2) empty-string via — truthy vs presence check divergence; mitigate with via !== undefined. (3) duplicate names in manifests[] — double-fan waste; mitigate with dedup in explicit branch. All three mitigations are structural (design prevents), not defensive. Two new success criteria added covering dedup + empty-via behavior. No redesign of spec — findings slot into existing Steps 3, 8, 12.
