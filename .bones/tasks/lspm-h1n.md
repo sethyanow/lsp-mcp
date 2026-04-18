@@ -1,11 +1,16 @@
 ---
 id: lspm-h1n
 title: R8a — discovery pipeline + built-in defaults source
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
+
+
 
 
 
@@ -331,20 +336,20 @@ Both new tasks block `lspm-cnq` (sub-epic). Layered-discovery SC bullet stays un
 
 ## Success Criteria
 
-- [ ] `src/discover.ts` exists with exports: `SourceKind` (type), `DiscoveredManifest` (interface), `discoverBuiltinManifests()`, `discoverConfigFileManifests(configPath)`, `discoverManifests(opts)`, `mergeDiscoveryPipeline(sources)`.
-- [ ] `src/router.ts:ManifestEntry` has `sourceKind: SourceKind` field; the three test helpers (`router.test.ts:7`, `mcp-server.test.ts:10`, `e2e.test.ts:11`) attach `sourceKind` consistently.
-- [ ] `src/config.ts` and `src/tests/config.test.ts` deleted (or `config.ts` reduced to pure re-export of `discover.ts` if kept for back-compat — prefer deletion per CLAUDE.md).
-- [ ] `src/index.ts` calls `discoverManifests({ configPath })` instead of `resolveManifests(configPath)`; builds `ManifestEntry[]` with `sourceKind` propagated; emits the `[lsp-mcp] loaded N manifests (...)` observability line at startup.
-- [ ] Built-in defaults loader: `path.resolve(__dirname, '../manifests')`, `withFileTypes` + `.json` filter + alphabetical `.sort()` + Zod `safeParse` + skip-on-invalid.
-- [ ] Config-file loader: behavior preserved — empty-array + stderr notice when file absent; `process.exit(1)` on JSON parse or Zod schema failure (matches current `resolveManifests` behavior; locked per Design decision).
-- [ ] Built-in loader: `existsSync(BUILTIN_DIR)` guard returns `[]` with one stderr warning when `manifests/` directory is absent.
-- [ ] Merge function: later source wins on name collision; stderr line format `[lsp-mcp] manifest "<name>" from <sourceKind> (<path>) overrides prior <sourceKind> (<path>).`.
-- [ ] Map-based dedup preserves registration slot → Router's first-registered-wins primary logic still produces `bazel-lsp` as the `starlark` primary (alphabetical order guarantees this across platforms).
-- [ ] Zero-env smoke test: `echo '' | node dist/index.js` prints `[lsp-mcp] loaded 12 manifests (builtin: 12)` on stderr (exact substring `builtin: 12` asserted); no "zero manifests" warning.
-- [ ] Zero-manifest observability format: when both sources produce `[]`, emit `[lsp-mcp] loaded 0 manifests` (no parens). Non-zero emits `[lsp-mcp] loaded N manifests (sourceKind: count, ...)`.
-- [ ] New discovery tests cover: 12-builtin load, alphabetical order, sourceKind propagation, missing config-file fallback, valid config-file load, name-collision override with stderr log, unique config-file additions, primary-stability across collision (bazel-lsp/starpls invariant).
-- [ ] `bun run test` green (baseline 112 + new discovery tests; final count logged to `bn log lspm-h1n`).
-- [ ] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`.
+- [x] `src/discover.ts` exists with exports: `SourceKind` (type), `DiscoveredManifest` (interface), `discoverBuiltinManifests()`, `discoverConfigFileManifests(configPath)`, `discoverManifests(opts)`, `mergeDiscoveryPipeline(sources)`.
+- [x] `src/router.ts:ManifestEntry` has `sourceKind: SourceKind` field; the three test helpers (`router.test.ts:7`, `mcp-server.test.ts:10`, `e2e.test.ts:11`) attach `sourceKind` consistently (all three locked to `"config-file"` with convention comment).
+- [x] `src/config.ts` and `src/tests/config.test.ts` deleted.
+- [x] `src/index.ts` calls `discoverManifests({ configPath })` instead of `resolveManifests(configPath)`; builds `ManifestEntry[]` with `sourceKind` propagated; emits the `[lsp-mcp] loaded N manifests (...)` observability line at startup.
+- [x] Built-in defaults loader: `path.resolve(__dirname, '../manifests')`, `withFileTypes` + `.json` filter + alphabetical `.sort()` + Zod `safeParse` + skip-on-invalid.
+- [x] Config-file loader: behavior preserved — empty-array + stderr notice when file absent; `process.exit(1)` on JSON parse or Zod schema failure (matches current `resolveManifests` behavior; locked per Design decision).
+- [x] Built-in loader: `existsSync(BUILTIN_DIR)` guard returns `[]` with one stderr warning when `manifests/` directory is absent.
+- [x] Merge function: later source wins on name collision; stderr line format `[lsp-mcp] manifest "<name>" from <sourceKind> (<path>) overrides prior <sourceKind> (<path>).`.
+- [x] Map-based dedup preserves registration slot → Router's first-registered-wins primary logic still produces `bazel-lsp` as the `starlark` primary (alphabetical order guarantees this across platforms). Adversarial test locks this invariant.
+- [x] Zero-env smoke test: `echo '' | node dist/index.js` prints `[lsp-mcp] loaded 12 manifests (builtin: 12)` on stderr (exact substring `builtin: 12` asserted); no "zero manifests" warning.
+- [x] Zero-manifest observability format: when both sources produce `[]`, emit `[lsp-mcp] loaded 0 manifests` (no parens). Non-zero emits `[lsp-mcp] loaded N manifests (sourceKind: count, ...)`.
+- [x] New discovery tests cover: 12-builtin load, alphabetical order, sourceKind propagation, missing config-file fallback, valid config-file load, name-collision override with stderr log, unique config-file additions, primary-stability across collision (bazel-lsp/starpls invariant). Plus 9 adversarial tests (empty/singular/self-referential/disconnected/slot-preservation/idempotence).
+- [x] `bun run test` green: 127 passed (baseline 112 + 6 TDD + 9 adversarial).
+- [x] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js` (0.87 MB).
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit message references `lspm-h1n`, enumerates out-of-scope R8b (LSP_MCP_MANIFESTS_DIR) / R8c (plugin-tree glob), notes malformed-default policy decision.
 - [ ] Follow-up R8b + R8c tasks created post-commit, both blocking `lspm-cnq`.
 
@@ -441,3 +446,5 @@ Both new tasks block `lspm-cnq` (sub-epic). Layered-discovery SC bullet stays un
 - [2026-04-18T08:50:33Z] [Seth] Scoped via writing-plans post-lspm-177 close (2026-04-18). User picked R8 (layered manifest discovery) over R3/R9/R5+R6 at checkpoint. Decomposed R8 into three sequential tasks per CLAUDE.md 'one cohesion seam per task': R8a (this) = pipeline + built-in defaults + sourceKind + LSP_MCP_CONFIG refactor + index.ts wire-up; R8b = LSP_MCP_MANIFESTS_DIR source (follow-up); R8c = CLAUDE_PLUGIN_ROOT plugin-tree glob (follow-up). Sub-epic layered-discovery SC bullet unchecked until all three land. Codebase-verified starting state: resolveManifests at config.ts:31 used only by index.ts:35 + config.test.ts; three test helpers construct ManifestEntry (router/mcp-server/e2e test files) needing sourceKind migration. Correction noted: lspm-cnq Key Consideration says 'fileURLToPath(import.meta.url)' but build format is CJS — R8a uses __dirname. Decision deferred to implementation: malformed-policy for user config (hard-exit vs soft-skip) — recommend preserving current hard-exit. Ready for fresh-session SRE.
 - [2026-04-18T09:31:10Z] [Seth] SRE fresh-session review (2026-04-18): spot-checked 8 skeleton claims against codebase — all verified (config.ts:31 resolveManifests, index.ts:22/35/46-49, router.ts:10-13 ManifestEntry, three entriesFrom at router/mcp-server/e2e test files, 12 manifests at repo root, 2 config.test.ts tests, CJS build via bun --format cjs + package.json has no type:module, fileURLToPath only used for URI conversion not module location). Applied all 10 SRE categories. Three gap-fills added (no redesigns): (1) Step 4 malformed-policy 'deferred to implementation' resolved — locked to preserve hard-exit for user config (matches current behavior, skeleton's own recommendation); (2) Step 2 made directory-absent case explicit — existsSync guard returns [] with stderr warning when manifests/ missing; (3) primary-stability-across-collision test added to Step 5 — asserts bazel-lsp stays primary for starlark when config-file overrides bazel-lsp entry, locks Map.set-preserves-slot invariant named in Failure Catalog + Key Considerations. SC updated with two new checkboxes. No anti-pattern or design choice changes. Ready for adversarial-planning (Step 1a).
 - [2026-04-18T09:33:39Z] [Seth] Adversarial-planning (2026-04-18): walked 6 failure categories across 6 components. Added 6 new catalog entries beyond existing 3: (1) UTF-8 BOM in JSON — preserved limitation, document in commit; (2) Zero-manifest observability — added if/else to emit '[lsp-mcp] loaded 0 manifests' w/o parens when both sources empty; (3) Name normalization (Zod z.string().min(1) doesn't trim) — known limitation, document in commit not fixed; (4) Parallel test stderr interleaving — mandate spy/restore pattern per-test; (5) entriesFrom helper sourceKind convention — lock to 'config-file' across all 3 files w/ comment; (6) ts-jest vs bun-build __dirname divergence — Step 10 now asserts exact 'builtin: 12' substring to fail loudly if bundler emits wrong module config. Updated Step 9 observability code block with zero-count branch. Updated Step 10 smoke to grep-assert the count. Added 2 new SCs (zero-manifest format + explicit 'builtin: 12' assertion). No scope expansion — BOM and name normalization explicitly deferred. Ready for TDD (Step 2).
+- [2026-04-18T09:40:35Z] [Seth] Step 10 smoke test (2026-04-18): bun run build emitted dist/index.js (0.87 MB) in 33ms. 'echo | node dist/index.js' output: 'lsp-mcp: no config file at /Volumes/code/lsp-mcp/lsp-mcp.config.json; starting with zero config-file manifests. Set LSP_MCP_CONFIG to provide plugins.' followed by '[lsp-mcp] loaded 12 manifests (builtin: 12)'. grep -q 'builtin: 12' passed. No zero-manifests warning. Clean stdin-close shutdown.
+- [2026-04-18T09:44:11Z] [Seth] Adversarial stress test (2026-04-18, Step 7): wrote 9 adversarial tests across mergeDiscoveryPipeline (6: empty/empty-batches/singular/self-referential/disconnected/slot-preservation) + discoverConfigFileManifests (3: empty-array/singular/second-run). All GREEN. Total suite: 127 (baseline 112 + 6 TDD + 9 adversarial). Three-Question Framework traced on: slot-preservation invariant (V8 Map.set preserves position — load-bearing for Router primary-stability), idempotence (pure stateless functions compose cleanly), intra-batch self-ref (merge stderr format awkward when sourcePath repeats — deferred as cosmetic observation, not bug). Skipped patterns with stated reasons: directory-absent on discoverBuiltinManifests (constant BUILTIN_DIR frozen at module load, mocking fs.existsSync at import-time is overhead > payoff for a 4-line guard); process.exit hard-exit paths on discoverConfigFileManifests (preserved verbatim from ported loadManifests which had no tests for these paths — port-equivalence holds). Port equivalence audit: hard-exit codes + stderr messages + Zod formatter all preserved verbatim; only additive fields are new (sourceKind, sourcePath). No regressions.

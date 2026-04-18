@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'url';
 import type { LspServer } from './lsp-server.js';
+import type { SourceKind } from './discover.js';
 import type { DiagnosticInfo, Location, PluginManifest, SymbolInfo } from './types.js';
 
 /**
@@ -10,6 +11,7 @@ import type { DiagnosticInfo, Location, PluginManifest, SymbolInfo } from './typ
 export interface ManifestEntry {
     manifest: PluginManifest;
     server: LspServer;
+    sourceKind: SourceKind;
 }
 
 /**

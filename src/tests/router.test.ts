@@ -4,8 +4,15 @@ import type { PluginManifest, SymbolInfo } from '../types';
 import { SymbolKind } from '../types';
 import { minimatch } from 'minimatch';
 
+// Test-fixture convention (lspm-h1n): attach sourceKind:"config-file" on every
+// synthesized ManifestEntry. Avoids implying the fixture represents a shipped
+// default. Keep this convention identical in mcp-server.test.ts and e2e.test.ts.
 function entriesFrom(servers: LspServer[]): ManifestEntry[] {
-    return servers.map((s) => ({ manifest: s.manifest, server: s }));
+    return servers.map((s) => ({
+        manifest: s.manifest,
+        server: s,
+        sourceKind: 'config-file' as const,
+    }));
 }
 
 // ---- Mock LspServer --------------------------------------------------------
@@ -825,5 +832,21 @@ describe('Router._fileRequest — post-open pause', () => {
         } finally {
             setTimeoutSpy.mockRestore();
         }
+    });
+});
+
+describe('ManifestEntry.sourceKind threading', () => {
+    it('preserves the sourceKind attached at construction on each entry', () => {
+        const pyServer = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const tsServer = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsls' });
+
+        const entries: ManifestEntry[] = [
+            { manifest: pyServer.manifest, server: pyServer, sourceKind: 'builtin' },
+            { manifest: tsServer.manifest, server: tsServer, sourceKind: 'config-file' },
+        ];
+        const router = new Router(entries);
+
+        expect(router.entries[0].sourceKind).toBe('builtin');
+        expect(router.entries[1].sourceKind).toBe('config-file');
     });
 });

@@ -19,7 +19,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { LspServer } from './lsp-server.js';
 import { Router, type ManifestEntry } from './router.js';
 import { createMcpServer } from './mcp-server.js';
-import { resolveManifests } from './config.js';
+import { discoverManifests } from './discover.js';
 
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -32,20 +32,37 @@ async function main(): Promise<void> {
         process.env.LSP_MCP_PLUGINS_DIR ?? path.join(path.dirname(configPath), 'plugins'),
     );
 
-    const manifests = resolveManifests(configPath);
+    const discovered = discoverManifests({ configPath });
 
-    for (const m of manifests) {
-        if (m.capabilities?.implementations?.stringPrefilter === false) {
+    if (discovered.length === 0) {
+        process.stderr.write(`[lsp-mcp] loaded 0 manifests\n`);
+    } else {
+        const countsBySource = discovered.reduce<Record<string, number>>((acc, d) => {
+            acc[d.sourceKind] = (acc[d.sourceKind] ?? 0) + 1;
+            return acc;
+        }, {});
+        process.stderr.write(
+            `[lsp-mcp] loaded ${discovered.length} manifests (` +
+                Object.entries(countsBySource)
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(', ') +
+                `)\n`
+        );
+    }
+
+    for (const d of discovered) {
+        if (d.manifest.capabilities?.implementations?.stringPrefilter === false) {
             process.stderr.write(
-                `[lsp-mcp] warning: impls on "${m.name}" may time out on cold cache — ` +
+                `[lsp-mcp] warning: impls on "${d.manifest.name}" may time out on cold cache — ` +
                     `outer-layer prefilter is not yet implemented.\n`
             );
         }
     }
 
-    const entries: ManifestEntry[] = manifests.map((m) => ({
-        manifest: m,
-        server: new LspServer(m, workspaceRoot, pluginsDir),
+    const entries: ManifestEntry[] = discovered.map((d) => ({
+        manifest: d.manifest,
+        server: new LspServer(d.manifest, workspaceRoot, pluginsDir),
+        sourceKind: d.sourceKind,
     }));
     const router = new Router(entries);
     const mcpServer = createMcpServer(router);

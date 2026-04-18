@@ -10100,7 +10100,7 @@ var require_dist = __commonJS((exports2, module2) => {
 });
 
 // src/index.ts
-var import_path2 = __toESM(require("path"));
+var import_path3 = __toESM(require("path"));
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var import_node_process = __toESM(require("node:process"));
@@ -25590,9 +25590,49 @@ function symbolKindName(kind) {
   return names[kind] ?? String(kind);
 }
 
-// src/config.ts
+// src/discover.ts
 var import_fs2 = require("fs");
-function loadManifests(configPath) {
+var import_path2 = __toESM(require("path"));
+var __dirname = "/Volumes/code/lsp-mcp/src";
+var BUILTIN_DIR = import_path2.default.resolve(__dirname, "../manifests");
+function discoverBuiltinManifests() {
+  if (!import_fs2.existsSync(BUILTIN_DIR)) {
+    process.stderr.write(`[lsp-mcp] built-in manifests dir missing at ${BUILTIN_DIR} — skipping built-in source
+`);
+    return [];
+  }
+  const files = import_fs2.readdirSync(BUILTIN_DIR, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => e.name).sort();
+  const out = [];
+  for (const name of files) {
+    const full = import_path2.default.join(BUILTIN_DIR, name);
+    let raw;
+    try {
+      raw = JSON.parse(import_fs2.readFileSync(full, "utf-8"));
+    } catch (err) {
+      process.stderr.write(`[lsp-mcp] failed to parse built-in manifest ${full}: ${err.message} — skipping
+`);
+      continue;
+    }
+    const parsed = PluginManifestSchema.safeParse(raw);
+    if (!parsed.success) {
+      process.stderr.write(`[lsp-mcp] built-in manifest ${full} failed schema validation — skipping
+`);
+      continue;
+    }
+    out.push({
+      manifest: parsed.data,
+      sourceKind: "builtin",
+      sourcePath: full
+    });
+  }
+  return out;
+}
+function discoverConfigFileManifests(configPath) {
+  if (!import_fs2.existsSync(configPath)) {
+    process.stderr.write(`lsp-mcp: no config file at ${configPath}; starting with zero config-file manifests. ` + `Set LSP_MCP_CONFIG to provide plugins.
+`);
+    return [];
+  }
   let raw;
   try {
     raw = JSON.parse(import_fs2.readFileSync(configPath, "utf-8"));
@@ -25613,37 +25653,64 @@ ${formatZodError(parsed.error)}
 `);
     process.exit(1);
   }
-  return parsed.data;
-}
-function resolveManifests(configPath) {
-  if (!import_fs2.existsSync(configPath)) {
-    process.stderr.write(`lsp-mcp: no config file at ${configPath}; starting with zero manifests. ` + `Set LSP_MCP_CONFIG to provide plugins.
-`);
-    return [];
-  }
-  return loadManifests(configPath);
+  return parsed.data.map((manifest) => ({
+    manifest,
+    sourceKind: "config-file",
+    sourcePath: configPath
+  }));
 }
 function formatZodError(err) {
   return err.issues.map((i) => `  - ${i.path.join(".") || "<root>"}: ${i.message}`).join(`
 `);
 }
+function mergeDiscoveryPipeline(sources) {
+  const byName = new Map;
+  for (const batch of sources) {
+    for (const discovered of batch) {
+      const prior = byName.get(discovered.manifest.name);
+      if (prior) {
+        process.stderr.write(`[lsp-mcp] manifest "${discovered.manifest.name}" from ${discovered.sourceKind} ` + `(${discovered.sourcePath ?? "?"}) overrides prior ${prior.sourceKind} ` + `(${prior.sourcePath ?? "?"}).
+`);
+      }
+      byName.set(discovered.manifest.name, discovered);
+    }
+  }
+  return Array.from(byName.values());
+}
+function discoverManifests(opts) {
+  const builtins = discoverBuiltinManifests();
+  const configFile = discoverConfigFileManifests(opts.configPath);
+  return mergeDiscoveryPipeline([builtins, configFile]);
+}
 
 // src/index.ts
 var SHUTDOWN_TIMEOUT_MS = 5000;
 async function main() {
-  const configPath = import_path2.default.resolve(process.env.LSP_MCP_CONFIG ?? import_path2.default.join(process.cwd(), "lsp-mcp.config.json"));
-  const workspaceRoot = import_path2.default.resolve(process.env.LSP_MCP_ROOT ?? process.cwd());
-  const pluginsDir = import_path2.default.resolve(process.env.LSP_MCP_PLUGINS_DIR ?? import_path2.default.join(import_path2.default.dirname(configPath), "plugins"));
-  const manifests = resolveManifests(configPath);
-  for (const m of manifests) {
-    if (m.capabilities?.implementations?.stringPrefilter === false) {
-      process.stderr.write(`[lsp-mcp] warning: impls on "${m.name}" may time out on cold cache — ` + `outer-layer prefilter is not yet implemented.
+  const configPath = import_path3.default.resolve(process.env.LSP_MCP_CONFIG ?? import_path3.default.join(process.cwd(), "lsp-mcp.config.json"));
+  const workspaceRoot = import_path3.default.resolve(process.env.LSP_MCP_ROOT ?? process.cwd());
+  const pluginsDir = import_path3.default.resolve(process.env.LSP_MCP_PLUGINS_DIR ?? import_path3.default.join(import_path3.default.dirname(configPath), "plugins"));
+  const discovered = discoverManifests({ configPath });
+  if (discovered.length === 0) {
+    process.stderr.write(`[lsp-mcp] loaded 0 manifests
+`);
+  } else {
+    const countsBySource = discovered.reduce((acc, d) => {
+      acc[d.sourceKind] = (acc[d.sourceKind] ?? 0) + 1;
+      return acc;
+    }, {});
+    process.stderr.write(`[lsp-mcp] loaded ${discovered.length} manifests (` + Object.entries(countsBySource).map(([k, v]) => `${k}: ${v}`).join(", ") + `)
+`);
+  }
+  for (const d of discovered) {
+    if (d.manifest.capabilities?.implementations?.stringPrefilter === false) {
+      process.stderr.write(`[lsp-mcp] warning: impls on "${d.manifest.name}" may time out on cold cache — ` + `outer-layer prefilter is not yet implemented.
 `);
     }
   }
-  const entries = manifests.map((m) => ({
-    manifest: m,
-    server: new LspServer(m, workspaceRoot, pluginsDir)
+  const entries = discovered.map((d) => ({
+    manifest: d.manifest,
+    server: new LspServer(d.manifest, workspaceRoot, pluginsDir),
+    sourceKind: d.sourceKind
   }));
   const router = new Router(entries);
   const mcpServer = createMcpServer(router);
@@ -25677,5 +25744,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=388281BA296A456164756E2164756E21
+//# debugId=A979C3EF2F7141B764756E2164756E21
 //# sourceMappingURL=index.js.map

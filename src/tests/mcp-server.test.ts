@@ -7,8 +7,13 @@ import type { PluginManifest } from '../types';
 import { SymbolKind } from '../types';
 import { minimatch } from 'minimatch';
 
+// Test-fixture convention (lspm-h1n): see comment in router.test.ts.
 function entriesFrom(servers: LspServer[]): ManifestEntry[] {
-    return servers.map((s) => ({ manifest: s.manifest, server: s }));
+    return servers.map((s) => ({
+        manifest: s.manifest,
+        server: s,
+        sourceKind: 'config-file' as const,
+    }));
 }
 
 // ---- Mock helpers ----------------------------------------------------------

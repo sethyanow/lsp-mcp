@@ -8,8 +8,13 @@ import { PluginManifestSchema } from '../types';
 
 const STUB = path.resolve(__dirname, 'fixtures/stub-lsp.js');
 
+// Test-fixture convention (lspm-h1n): see comment in router.test.ts.
 function entriesFrom(servers: LspServer[]): ManifestEntry[] {
-    return servers.map((s) => ({ manifest: s.manifest, server: s }));
+    return servers.map((s) => ({
+        manifest: s.manifest,
+        server: s,
+        sourceKind: 'config-file' as const,
+    }));
 }
 
 function makeServer(extraArgs: string[] = []): LspServer {
