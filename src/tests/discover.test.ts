@@ -1,11 +1,13 @@
 import path from 'path';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import {
     discoverBuiltinManifests,
     discoverConfigFileManifests,
     discoverManifests,
+    discoverManifestsDir,
     mergeDiscoveryPipeline,
+    resolveManifestsDirEnv,
     type DiscoveredManifest,
 } from '../discover';
 import type { PluginManifest } from '../types';
@@ -36,6 +38,74 @@ describe('discoverBuiltinManifests', () => {
         }
         const names = discovered.map((d) => d.manifest.name);
         expect(names).toEqual(CANONICAL);
+    });
+});
+
+describe('resolveManifestsDirEnv', () => {
+    it('returns undefined for undefined input', () => {
+        expect(resolveManifestsDirEnv(undefined)).toBeUndefined();
+    });
+
+    it('returns undefined for empty string (guards against path.resolve("") = cwd)', () => {
+        expect(resolveManifestsDirEnv('')).toBeUndefined();
+    });
+
+    it('returns an absolute path unchanged', () => {
+        const abs = path.resolve('/tmp/lsp-mcp-r8b-abs');
+        expect(resolveManifestsDirEnv(abs)).toBe(abs);
+    });
+
+    it('resolves a relative path against cwd', () => {
+        expect(resolveManifestsDirEnv('my-dir')).toBe(path.resolve(process.cwd(), 'my-dir'));
+    });
+});
+
+describe('discoverManifestsDir', () => {
+    let stderrSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+        stderrSpy.mockRestore();
+    });
+
+    it('returns [] and writes a stderr notice when the dir is absent', () => {
+        const missing = `/nonexistent-lsp-mcp-r8b-${Date.now()}`;
+
+        const result = discoverManifestsDir(missing);
+
+        expect(result).toEqual([]);
+        const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+        expect(written).toMatch(/manifests-dir.*(skipping|missing)/i);
+        expect(written).toContain(missing);
+    });
+
+    it('loads manifests from a valid dir, tags sourceKind:"manifests-dir", sorts alphabetically', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-manifests-dir-'));
+        try {
+            writeFileSync(
+                path.join(dir, 'beta.json'),
+                JSON.stringify(mkManifest('beta'))
+            );
+            writeFileSync(
+                path.join(dir, 'alpha.json'),
+                JSON.stringify(mkManifest('alpha'))
+            );
+
+            const result = discoverManifestsDir(dir);
+
+            expect(result).toHaveLength(2);
+            expect(result.map((d) => d.manifest.name)).toEqual(['alpha', 'beta']);
+            for (const d of result) {
+                expect(d.sourceKind).toBe('manifests-dir');
+                expect(d.sourcePath).toMatch(/\.json$/);
+                expect(d.sourcePath).toContain(dir);
+            }
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
 
@@ -196,6 +266,70 @@ describe('discoverManifests', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+
+    it('three-way merge: builtin < config-file < manifests-dir, with chained override logs and slot preservation', () => {
+        const { dir: cfgDir, cfg } = writeConfigFixture([
+            {
+                name: 'pyright',
+                version: '88.88.88',
+                langIds: ['python'],
+                fileGlobs: ['**/*.py'],
+                workspaceMarkers: [],
+                server: { cmd: ['config-pyright'] },
+            },
+        ]);
+        const mDir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-3way-'));
+        try {
+            writeFileSync(
+                path.join(mDir, 'pyright.json'),
+                JSON.stringify({
+                    name: 'pyright',
+                    version: '99.99.99',
+                    langIds: ['python'],
+                    fileGlobs: ['**/*.py'],
+                    workspaceMarkers: [],
+                    server: { cmd: ['dir-pyright'] },
+                })
+            );
+            writeFileSync(
+                path.join(mDir, 'bazel-lsp.json'),
+                JSON.stringify({
+                    name: 'bazel-lsp',
+                    version: '99.99.99',
+                    langIds: ['starlark'],
+                    fileGlobs: ['**/BUILD', '**/*.bzl'],
+                    workspaceMarkers: ['WORKSPACE'],
+                    server: { cmd: ['dir-bazel'] },
+                })
+            );
+
+            const result = discoverManifests({ configPath: cfg, manifestsDir: mDir });
+
+            const pyright = result.find((d) => d.manifest.name === 'pyright');
+            expect(pyright?.sourceKind).toBe('manifests-dir');
+            expect(pyright?.manifest.server.cmd[0]).toBe('dir-pyright');
+
+            const bazel = result.find((d) => d.manifest.name === 'bazel-lsp');
+            expect(bazel?.sourceKind).toBe('manifests-dir');
+            expect(bazel?.manifest.server.cmd[0]).toBe('dir-bazel');
+
+            const allStderr = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(allStderr).toMatch(/"pyright" from config-file .* overrides prior builtin/);
+            expect(allStderr).toMatch(/"pyright" from manifests-dir .* overrides prior config-file/);
+            expect(allStderr).toMatch(/"bazel-lsp" from manifests-dir .* overrides prior builtin/);
+
+            // Slot preservation: bazel-lsp keeps its builtin slot (before starpls)
+            // even after chained override through manifests-dir.
+            const bazelIdx = result.findIndex((d) => d.manifest.name === 'bazel-lsp');
+            const starplsIdx = result.findIndex((d) => d.manifest.name === 'starpls');
+            expect(bazelIdx).toBeGreaterThanOrEqual(0);
+            expect(starplsIdx).toBeGreaterThanOrEqual(0);
+            expect(bazelIdx).toBeLessThan(starplsIdx);
+        } finally {
+            rmSync(cfgDir, { recursive: true, force: true });
+            rmSync(mDir, { recursive: true, force: true });
+        }
+    });
 });
 
 // ---- Adversarial battery (lspm-h1n Step 7) ---------------------------------
@@ -340,6 +474,145 @@ describe('discoverConfigFileManifests — adversarial', () => {
             expect(run2).toEqual(run1);
         } finally {
             rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+// ---- discoverManifestsDir adversarial battery (lspm-kgj Step 7) ------------
+
+describe('discoverManifestsDir — adversarial', () => {
+    let stderrSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+        stderrSpy.mockRestore();
+    });
+
+    it('empty: dir exists with zero .json files returns []', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-empty-'));
+        try {
+            const result = discoverManifestsDir(dir);
+            expect(result).toEqual([]);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('type boundary: path points at a file, not a directory → soft-skip with "not a directory" stderr', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-filepath-'));
+        const filePath = path.join(dir, 'just-a-file.json');
+        try {
+            writeFileSync(filePath, JSON.stringify(mkManifest('trap')));
+
+            const result = discoverManifestsDir(filePath);
+
+            expect(result).toEqual([]);
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(written).toMatch(/not a directory/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('semantically hostile: non-.json file sibling is filtered out', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-mixed-'));
+        try {
+            writeFileSync(path.join(dir, 'valid.json'), JSON.stringify(mkManifest('valid')));
+            writeFileSync(path.join(dir, 'notes.txt'), 'ignore me');
+            writeFileSync(path.join(dir, 'README'), 'ignore me too');
+
+            const result = discoverManifestsDir(dir);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('valid');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('semantically hostile: subdir with .json extension is filtered out (isFile guard)', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-subdir-'));
+        try {
+            mkdirSync(path.join(dir, 'subdir.json'));
+            writeFileSync(path.join(dir, 'real.json'), JSON.stringify(mkManifest('real')));
+
+            const result = discoverManifestsDir(dir);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('real');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('semantically hostile: invalid JSON content is soft-skipped with stderr notice', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-badjson-'));
+        try {
+            writeFileSync(path.join(dir, 'broken.json'), '{ not valid json');
+            writeFileSync(path.join(dir, 'good.json'), JSON.stringify(mkManifest('good')));
+
+            const result = discoverManifestsDir(dir);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('good');
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(written).toMatch(/failed to parse.*broken\.json/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('semantically hostile: JSON that fails schema validation is soft-skipped', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-badschema-'));
+        try {
+            // Missing required fields (name, server, etc.)
+            writeFileSync(path.join(dir, 'bad.json'), JSON.stringify({ version: '0.1.0' }));
+            writeFileSync(path.join(dir, 'good.json'), JSON.stringify(mkManifest('good')));
+
+            const result = discoverManifestsDir(dir);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('good');
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(written).toMatch(/failed schema validation/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('second-run: calling twice with the same dir returns equivalent results (idempotent)', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-idem-'));
+        try {
+            writeFileSync(path.join(dir, 'one.json'), JSON.stringify(mkManifest('one')));
+            writeFileSync(path.join(dir, 'two.json'), JSON.stringify(mkManifest('two')));
+
+            const run1 = discoverManifestsDir(dir);
+            const run2 = discoverManifestsDir(dir);
+
+            expect(run2).toEqual(run1);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('self-referential: discoverManifests with manifestsDir pointing at the builtin dir yields 12 manifests-dir entries + 12 override logs', () => {
+        const builtinDir = path.resolve(__dirname, '../../manifests');
+        const { dir: cfgDir, cfg } = writeConfigFixture([]);
+
+        try {
+            const result = discoverManifests({ configPath: cfg, manifestsDir: builtinDir });
+
+            expect(result).toHaveLength(12);
+            expect(result.every((d) => d.sourceKind === 'manifests-dir')).toBe(true);
+
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            const overrides = written.match(/from manifests-dir .* overrides prior builtin/g) ?? [];
+            expect(overrides.length).toBe(12);
+        } finally {
+            rmSync(cfgDir, { recursive: true, force: true });
         }
     });
 });

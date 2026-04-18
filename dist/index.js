@@ -25595,37 +25595,57 @@ var import_fs2 = require("fs");
 var import_path2 = __toESM(require("path"));
 var __dirname = "/Volumes/code/lsp-mcp/src";
 var BUILTIN_DIR = import_path2.default.resolve(__dirname, "../manifests");
-function discoverBuiltinManifests() {
-  if (!import_fs2.existsSync(BUILTIN_DIR)) {
-    process.stderr.write(`[lsp-mcp] built-in manifests dir missing at ${BUILTIN_DIR} — skipping built-in source
+function discoverFromJsonDir(dir, sourceKind) {
+  if (!import_fs2.existsSync(dir)) {
+    process.stderr.write(`[lsp-mcp] ${sourceKind} source: dir missing at ${dir} — skipping
 `);
     return [];
   }
-  const files = import_fs2.readdirSync(BUILTIN_DIR, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => e.name).sort();
+  let entries;
+  try {
+    const st = import_fs2.statSync(dir);
+    if (!st.isDirectory()) {
+      process.stderr.write(`[lsp-mcp] ${sourceKind} source: path ${dir} is not a directory — skipping
+`);
+      return [];
+    }
+    entries = import_fs2.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    process.stderr.write(`[lsp-mcp] ${sourceKind} source: could not read ${dir}: ${err.message} — skipping
+`);
+    return [];
+  }
+  const files = entries.filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => e.name).sort();
   const out = [];
   for (const name of files) {
-    const full = import_path2.default.join(BUILTIN_DIR, name);
+    const full = import_path2.default.join(dir, name);
     let raw;
     try {
       raw = JSON.parse(import_fs2.readFileSync(full, "utf-8"));
     } catch (err) {
-      process.stderr.write(`[lsp-mcp] failed to parse built-in manifest ${full}: ${err.message} — skipping
+      process.stderr.write(`[lsp-mcp] failed to parse ${sourceKind} manifest ${full}: ${err.message} — skipping
 `);
       continue;
     }
     const parsed = PluginManifestSchema.safeParse(raw);
     if (!parsed.success) {
-      process.stderr.write(`[lsp-mcp] built-in manifest ${full} failed schema validation — skipping
+      process.stderr.write(`[lsp-mcp] ${sourceKind} manifest ${full} failed schema validation — skipping
 `);
       continue;
     }
     out.push({
       manifest: parsed.data,
-      sourceKind: "builtin",
+      sourceKind,
       sourcePath: full
     });
   }
   return out;
+}
+function discoverBuiltinManifests() {
+  return discoverFromJsonDir(BUILTIN_DIR, "builtin");
+}
+function discoverManifestsDir(dir) {
+  return discoverFromJsonDir(dir, "manifests-dir");
 }
 function discoverConfigFileManifests(configPath) {
   if (!import_fs2.existsSync(configPath)) {
@@ -25677,10 +25697,14 @@ function mergeDiscoveryPipeline(sources) {
   }
   return Array.from(byName.values());
 }
+function resolveManifestsDirEnv(raw) {
+  return raw && raw.length > 0 ? import_path2.default.resolve(raw) : undefined;
+}
 function discoverManifests(opts) {
   const builtins = discoverBuiltinManifests();
   const configFile = discoverConfigFileManifests(opts.configPath);
-  return mergeDiscoveryPipeline([builtins, configFile]);
+  const manifestsDir = opts.manifestsDir ? discoverManifestsDir(opts.manifestsDir) : [];
+  return mergeDiscoveryPipeline([builtins, configFile, manifestsDir]);
 }
 
 // src/index.ts
@@ -25689,7 +25713,8 @@ async function main() {
   const configPath = import_path3.default.resolve(process.env.LSP_MCP_CONFIG ?? import_path3.default.join(process.cwd(), "lsp-mcp.config.json"));
   const workspaceRoot = import_path3.default.resolve(process.env.LSP_MCP_ROOT ?? process.cwd());
   const pluginsDir = import_path3.default.resolve(process.env.LSP_MCP_PLUGINS_DIR ?? import_path3.default.join(import_path3.default.dirname(configPath), "plugins"));
-  const discovered = discoverManifests({ configPath });
+  const manifestsDir = resolveManifestsDirEnv(process.env.LSP_MCP_MANIFESTS_DIR);
+  const discovered = discoverManifests({ configPath, manifestsDir });
   if (discovered.length === 0) {
     process.stderr.write(`[lsp-mcp] loaded 0 manifests
 `);
@@ -25744,5 +25769,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=A979C3EF2F7141B764756E2164756E21
+//# debugId=F18D69A499F4E28C64756E2164756E21
 //# sourceMappingURL=index.js.map

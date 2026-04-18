@@ -1,11 +1,13 @@
 ---
 id: lspm-kgj
 title: R8b — LSP_MCP_MANIFESTS_DIR source
-status: open
+status: active
 type: task
 priority: 1
 parent: lspm-cnq
 ---
+
+
 
 
 ## Context
@@ -19,7 +21,7 @@ Sub-epic SC (`lspm-cnq`): "Layered manifest discovery: built-in defaults dir + `
 - `src/discover.ts` (133 lines) exports: `SourceKind` ('builtin' | 'plugin-tree' | 'config-file' | 'manifests-dir'), `DiscoveredManifest`, `discoverBuiltinManifests()`, `discoverConfigFileManifests(configPath)`, `discoverManifests({configPath})`, `mergeDiscoveryPipeline`.
 - `discoverBuiltinManifests` body has 40 lines of FS + filter + sort + safeParse — R8b reuses this pattern for the new dir loader, extracted into a shared private helper.
 - `src/index.ts:22` imports `discoverManifests`; `src/index.ts:35` calls `discoverManifests({ configPath })`; `src/index.ts:7-16` doc comment lists 3 env vars (`LSP_MCP_CONFIG`, `LSP_MCP_ROOT`, `LSP_MCP_PLUGINS_DIR`).
-- `src/tests/discover.test.ts` (305 lines) has 16 tests (7 core + 9 adversarial) + helpers `writeConfigFixture`, `mkManifest`, `mkDiscovered` reusable by R8b tests.
+- `src/tests/discover.test.ts` (345 lines) has 16 tests (7 core + 9 adversarial) + helpers `writeConfigFixture` (top-level, line 90), `mkManifest` (line 203), `mkDiscovered` (line 215) reusable by R8b tests.
 - Tests baseline: 127 green across 6 suites.
 
 ## Requirements
@@ -158,7 +160,7 @@ export function discoverManifestsDir(dir: string): DiscoveredManifest[] {
 
 Add the adversarial-planning guards inside `discoverFromJsonDir`:
 - After `existsSync`, add `statSync(dir).isDirectory()` check → soft-skip if false
-- Wrap `readdirSync` in try/catch → soft-skip on permission-denied or other FS errors
+- Wrap BOTH `statSync` AND `readdirSync` in a single try/catch → soft-skip on permission-denied or other FS errors. Do NOT scope the try/catch to `readdirSync` alone — `statSync` can throw `EACCES` independently of `existsSync` (e.g., parent dir has `-x` stripped; overlay FS answers existsSync but refuses stat).
 
 Run full suite (`bun run test`) → expect 127 + Step 1 test + Step 3 test = 129 green. No regressions in built-in loader (the extraction preserves its behavior).
 
@@ -240,12 +242,12 @@ Run `bun run typecheck` → clean. Run full suite → 129+ green.
 
 ### Step 8 — Smoke test: observability shows `manifests-dir: N`
 
-Commands:
+Build first, then two smoke passes (add-only, then override). Each pass captures stderr, asserts via `grep`, and the step hard-fails if any assertion misses.
 
 ```bash
 bun run build 2>&1 | tail -5
 
-# Create fixture dir with one custom manifest
+# --- Smoke 1: add-only (new manifest name) ---
 tmpdir=$(mktemp -d)
 cat > "$tmpdir/my-custom-lsp.json" <<'EOF'
 {
@@ -258,15 +260,38 @@ cat > "$tmpdir/my-custom-lsp.json" <<'EOF'
 }
 EOF
 
-LSP_MCP_MANIFESTS_DIR="$tmpdir" echo '' | LSP_MCP_MANIFESTS_DIR="$tmpdir" node dist/index.js 2>&1 | head -5
+smoke1=$(LSP_MCP_MANIFESTS_DIR="$tmpdir" node dist/index.js < /dev/null 2>&1 | head -20)
+echo "$smoke1"
+echo "$smoke1" | grep -q 'manifests-dir: 1' || { echo "SMOKE 1 FAIL: no 'manifests-dir: 1' in stderr"; exit 1; }
+echo "$smoke1" | grep -q 'loaded 13 manifests' || { echo "SMOKE 1 FAIL: expected 'loaded 13 manifests'"; exit 1; }
+echo "SMOKE 1 OK"
+
+# --- Smoke 2: override (pyright shadow) ---
+cat > "$tmpdir/pyright.json" <<'EOF'
+{
+  "name": "pyright",
+  "version": "99.99.99",
+  "langIds": ["python"],
+  "fileGlobs": ["**/*.py"],
+  "workspaceMarkers": [],
+  "server": { "cmd": ["forked-pyright"] }
+}
+EOF
+
+smoke2=$(LSP_MCP_MANIFESTS_DIR="$tmpdir" node dist/index.js < /dev/null 2>&1 | head -30)
+echo "$smoke2"
+echo "$smoke2" | grep -qE '"pyright" from manifests-dir .* overrides prior builtin' \
+    || { echo "SMOKE 2 FAIL: expected pyright override log"; exit 1; }
+echo "$smoke2" | grep -q 'manifests-dir: 2' || { echo "SMOKE 2 FAIL: expected 'manifests-dir: 2'"; exit 1; }
+echo "SMOKE 2 OK"
+
+rm -rf "$tmpdir"
 ```
 
-Expected stderr:
-- `[lsp-mcp] loaded 13 manifests (builtin: 12, manifests-dir: 1)` — exact substring `manifests-dir: 1` asserted via `grep -q 'manifests-dir: 1'`. If missing, fail the step.
-
-Run a second smoke covering override behavior: create `$tmpdir/pyright.json` with a custom `pyright` manifest; rerun; expect stderr to contain `/"pyright" from manifests-dir .* overrides prior builtin/`.
-
-Record both outputs in `bn log lspm-kgj`.
+Notes:
+- Use `< /dev/null` (not `echo '' |`) so the pipe closes cleanly without pushing a stray newline into the MCP transport. `stdin.on('end', doShutdown)` fires after discovery stderr has already flushed (discovery is sync, runs before `transport.connect`).
+- `head -20` / `head -30` keeps output bounded without racing the shutdown path.
+- Both `grep -q` checks MUST pass. Record both `smoke1` and `smoke2` outputs verbatim in `bn log lspm-kgj`.
 
 ### Step 9 — Full suite + typecheck + build
 
@@ -292,21 +317,21 @@ Do NOT create follow-up task stubs. R8c (`lspm-mcp`) already exists from lspm-h1
 
 ## Success Criteria
 
-- [ ] `src/discover.ts` exports `discoverManifestsDir(dir: string): DiscoveredManifest[]`
-- [ ] Private helper `discoverFromJsonDir(dir, sourceKind)` extracted from `discoverBuiltinManifests`; both public dir-loaders delegate to it
-- [ ] `discoverFromJsonDir` adds two guards: `statSync(dir).isDirectory()` soft-skip, try/catch around `readdirSync` for permission-denied soft-skip
-- [ ] `discoverManifests` signature accepts optional `manifestsDir?: string`; R8a single-arg form still works
-- [ ] Merge priority `[builtins, configFile, manifestsDir]` — manifests-dir overrides config-file overrides builtin; Map-insertion-order preserves registration slots through chained overrides
-- [ ] `src/index.ts` reads `LSP_MCP_MANIFESTS_DIR` env var; empty-string treated as unset; relative paths normalized via `path.resolve`
-- [ ] `src/index.ts` doc comment lists all 4 env vars with descriptions; `LSP_MCP_MANIFESTS_DIR` documented with "use absolute paths" note
-- [ ] Observability line renders `manifests-dir: N` when source active
-- [ ] Dir-absent behavior: soft-skip + stderr notice (matches `discoverBuiltinManifests`)
-- [ ] New discovery tests cover: dir-absent, valid dir with 2 manifests (alphabetical), three-way collision (builtin vs config vs manifests-dir), chained-override slot preservation
-- [ ] Smoke test with `LSP_MCP_MANIFESTS_DIR` set shows `manifests-dir: N` in startup observability (exact substring `manifests-dir: 1` asserted via `grep -q`)
-- [ ] Second smoke with override fixture shows `"pyright" from manifests-dir ... overrides prior builtin` stderr line
-- [ ] `bun run test` green (baseline 127 + new tests; final count logged to `bn log lspm-kgj`)
-- [ ] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit references `lspm-kgj`, notes latent-bug fixes in built-in loader (stat + permission guards), defers R8c plugin-tree glob.
+- [x] `src/discover.ts` exports `discoverManifestsDir(dir: string): DiscoveredManifest[]`
+- [x] Private helper `discoverFromJsonDir(dir, sourceKind)` extracted from `discoverBuiltinManifests`; both public dir-loaders delegate to it
+- [x] `discoverFromJsonDir` adds two guards: `statSync(dir).isDirectory()` soft-skip, try/catch around `readdirSync` for permission-denied soft-skip (scope expanded per SRE: single try/catch wraps both `statSync` and `readdirSync`, since `statSync` can throw EACCES independently of `existsSync`)
+- [x] `discoverManifests` signature accepts optional `manifestsDir?: string`; R8a single-arg form still works
+- [x] Merge priority `[builtins, configFile, manifestsDir]` — manifests-dir overrides config-file overrides builtin; Map-insertion-order preserves registration slots through chained overrides
+- [x] `src/index.ts` reads `LSP_MCP_MANIFESTS_DIR` env var; empty-string treated as unset; relative paths normalized via `path.resolve` (extracted as testable `resolveManifestsDirEnv` helper in discover.ts)
+- [x] `src/index.ts` doc comment lists all 4 env vars with descriptions; `LSP_MCP_MANIFESTS_DIR` documented with "use absolute paths" note
+- [x] Observability line renders `manifests-dir: N` when source active
+- [x] Dir-absent behavior: soft-skip + stderr notice (matches `discoverBuiltinManifests`)
+- [x] New discovery tests cover: dir-absent, valid dir with 2 manifests (alphabetical), three-way collision (builtin vs config vs manifests-dir), chained-override slot preservation
+- [x] Smoke test with `LSP_MCP_MANIFESTS_DIR` set shows `manifests-dir: N` in startup observability (exact substring `manifests-dir: 1` asserted via `grep -q`)
+- [x] Second smoke with override fixture shows `"pyright" from manifests-dir ... overrides prior builtin` stderr line
+- [x] `bun run test` green (baseline 127 + 15 new = 142; final count logged to `bn log lspm-kgj`)
+- [x] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
+- [ ] Single commit on `dev`, pushed via bare `git push`. Commit references `lspm-kgj`, notes latent-bug fixes in built-in loader (stat + permission guards), defers R8c plugin-tree glob. **(pending — Step 10)**
 
 ## Anti-Patterns
 
@@ -347,9 +372,15 @@ Do NOT create follow-up task stubs. R8c (`lspm-mcp`) already exists from lspm-h1
 
 **Dependency Treachery: permission-denied on dir read**
 - Assumption: server has read permission to any dir the user specifies.
-- Betrayal: user points to a root-owned or ACL-restricted dir; `readdirSync` throws `EACCES`.
+- Betrayal: user points to a root-owned or ACL-restricted dir; `readdirSync` throws `EACCES`. Separately, `statSync(dir)` can throw `EACCES` independently of `existsSync` — e.g., when a parent dir has the `-x` bit stripped mid-walk, or on overlay filesystems that answer `existsSync` but refuse stat.
 - Consequence: uncaught exception propagates, server fails to start.
-- Mitigation: wrap `readdirSync` in try/catch; log "could not read dir ... permission denied" and return `[]`. Applied to shared helper.
+- Mitigation: a single try/catch wraps BOTH `statSync` and `readdirSync` inside `discoverFromJsonDir` — on any FS error, log "could not read dir ... permission denied" (or the actual error message) and return `[]`. Do NOT scope the try/catch to `readdirSync` alone; statSync is equally exposed.
+
+**Encoding Boundaries: UTF-8 BOM in manifest files**
+- Assumption: manifest JSON files start with a JSON value (e.g., `{`), not a byte-order mark.
+- Betrayal: user authors a JSON file with a Windows editor (Notepad, some VS Code configs) that prepends BOM (U+FEFF). `JSON.parse(readFileSync(full, 'utf-8'))` throws `SyntaxError: Unexpected token ﻿ in JSON at position 0`.
+- Consequence: file silently soft-skipped via existing per-file try/catch. User sees `[lsp-mcp] failed to parse ... Unexpected token` in stderr with no hint that BOM is the cause.
+- Mitigation: the existing per-file try/catch already soft-skips — no crash. Structural protection is in place. Debuggability concern only: the stderr message is the user's diagnostic handle; they may need a nudge toward BOM. Not worth stripping BOM automatically (scope creep; hides other encoding mistakes). Noted so implementer doesn't add BOM-stripping "just in case."
 
 **Temporal Betrayal: dir modified during discovery**
 - Assumption: files present at `readdirSync` time are still present at `readFileSync` time.
@@ -365,3 +396,4 @@ Do NOT create follow-up task stubs. R8c (`lspm-mcp`) already exists from lspm-h1
 
 ## Log
 - [2026-04-18T09:51:55Z] [Seth] Scoped via writing-plans (2026-04-18) during lspm-h1n close-out. Single cohesion seam: add 4th pipeline source (LSP_MCP_MANIFESTS_DIR env var → dir-of-JSONs) + extract shared dir-loader helper from existing built-in loader. Codebase-verified starting state: discover.ts 133 lines w/ 6 exports from R8a; index.ts reads 3 env vars (R8b extends to 4); discover.test.ts has 16 tests + reusable fixture helpers. Design picks up R8a's locked dir-absent policy (soft-skip) for manifests-dir, and leverages Map-insertion-order invariant for slot preservation across chained overrides (builtin→config-file→manifests-dir). Incidental latent-bug fix: statSync.isDirectory + permission-denied guards added to shared helper, benefiting built-in loader too. Ready for fresh-session SRE.
+- [2026-04-18T19:27:52Z] [Seth] Step 8 smoke tests GREEN. Smoke 1 (add-only): stderr 'loaded 13 manifests (builtin: 12, manifests-dir: 1)'. Smoke 2 (override): stderr 'manifest "pyright" from manifests-dir (...) overrides prior builtin (...)' + 'loaded 13 manifests (builtin: 11, manifests-dir: 2)' — override shifts pyright out of builtin bucket into manifests-dir (11 non-overridden + 2 from dir = 13). Both grep -q assertions passed.

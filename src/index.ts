@@ -5,21 +5,27 @@
  * Reads a plugin configuration file and starts the MCP server.
  *
  * Configuration:
- *   LSP_MCP_CONFIG        Path to a JSON config file listing plugin manifests.
- *                         Defaults to ./lsp-mcp.config.json.
- *   LSP_MCP_ROOT          Workspace root passed to each LSP server.
- *                         Defaults to process.cwd().
- *   LSP_MCP_PLUGINS_DIR   Directory containing per-plugin asset dirs.
- *                         ${pluginDir} in cmd/buildHook expands to
- *                         "$LSP_MCP_PLUGINS_DIR/<manifest.name>".
- *                         Defaults to "<dirname(LSP_MCP_CONFIG)>/plugins".
+ *   LSP_MCP_CONFIG          Path to a JSON config file listing plugin manifests.
+ *                           Defaults to ./lsp-mcp.config.json.
+ *   LSP_MCP_MANIFESTS_DIR   Optional directory of JSON manifest files. Each
+ *                           *.json file is parsed as a PluginManifest. Highest
+ *                           priority source — entries here override config-file
+ *                           and built-in defaults on name collision. Use
+ *                           absolute paths; CC invokes the server from
+ *                           arbitrary working directories.
+ *   LSP_MCP_ROOT            Workspace root passed to each LSP server.
+ *                           Defaults to process.cwd().
+ *   LSP_MCP_PLUGINS_DIR     Directory containing per-plugin asset dirs.
+ *                           ${pluginDir} in cmd/buildHook expands to
+ *                           "$LSP_MCP_PLUGINS_DIR/<manifest.name>".
+ *                           Defaults to "<dirname(LSP_MCP_CONFIG)>/plugins".
  */
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { LspServer } from './lsp-server.js';
 import { Router, type ManifestEntry } from './router.js';
 import { createMcpServer } from './mcp-server.js';
-import { discoverManifests } from './discover.js';
+import { discoverManifests, resolveManifestsDirEnv } from './discover.js';
 
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -31,8 +37,9 @@ async function main(): Promise<void> {
     const pluginsDir = path.resolve(
         process.env.LSP_MCP_PLUGINS_DIR ?? path.join(path.dirname(configPath), 'plugins'),
     );
+    const manifestsDir = resolveManifestsDirEnv(process.env.LSP_MCP_MANIFESTS_DIR);
 
-    const discovered = discoverManifests({ configPath });
+    const discovered = discoverManifests({ configPath, manifestsDir });
 
     if (discovered.length === 0) {
         process.stderr.write(`[lsp-mcp] loaded 0 manifests\n`);
