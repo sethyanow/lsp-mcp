@@ -350,8 +350,8 @@ Both new tasks block `lspm-cnq` (sub-epic). Layered-discovery SC bullet stays un
 - [x] New discovery tests cover: 12-builtin load, alphabetical order, sourceKind propagation, missing config-file fallback, valid config-file load, name-collision override with stderr log, unique config-file additions, primary-stability across collision (bazel-lsp/starpls invariant). Plus 9 adversarial tests (empty/singular/self-referential/disconnected/slot-preservation/idempotence).
 - [x] `bun run test` green: 127 passed (baseline 112 + 6 TDD + 9 adversarial).
 - [x] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js` (0.87 MB).
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit message references `lspm-h1n`, enumerates out-of-scope R8b (LSP_MCP_MANIFESTS_DIR) / R8c (plugin-tree glob), notes malformed-default policy decision.
-- [ ] Follow-up R8b + R8c tasks created post-commit, both blocking `lspm-cnq`.
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit `b218e59` references `lspm-h1n`, enumerates out-of-scope R8b (LSP_MCP_MANIFESTS_DIR) / R8c (plugin-tree glob), notes malformed-default policy decision + BOM/name-normalization known limitations.
+- [x] Follow-up R8b (`lspm-kgj`) + R8c (`lspm-mcp`) tasks created post-commit, both children of and blocking `lspm-cnq`.
 
 ## Anti-Patterns
 

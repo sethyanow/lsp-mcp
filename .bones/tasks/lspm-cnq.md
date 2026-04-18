@@ -4,9 +4,13 @@ title: 'Phase 1: Core plugin + multi-candidate routing'
 status: open
 type: epic
 priority: 1
-depends_on: [lspm-501, lspm-z4z, lspm-177, lspm-h1n]
+depends_on: [lspm-501, lspm-z4z, lspm-177, lspm-h1n, lspm-kgj, lspm-mcp]
 parent: lspm-y5n
 ---
+
+
+
+
 
 
 
