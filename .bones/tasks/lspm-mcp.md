@@ -8,6 +8,7 @@ parent: lspm-cnq
 ---
 
 
+
 ## Context
 
 Third and final R8 task. R8a (`lspm-h1n`) closed with the discovery pipeline + built-in defaults + `LSP_MCP_CONFIG`. R8b (`lspm-kgj`) closed with `LSP_MCP_MANIFESTS_DIR` + shared `discoverFromJsonDir` helper + `resolveManifestsDirEnv`. R8c adds the 2nd-priority slot: `$CLAUDE_PLUGIN_ROOT` plugin-tree auto-discovery globbing for `**/lsp-manifest.json`.
@@ -418,3 +419,27 @@ Do NOT create follow-up tasks. Sub-epic `lspm-cnq` still has other open SC (PATH
 
 - [2026-04-18] [Seth] Scoped via writing-plans during lspm-kgj close-out. Single cohesion seam: add 4th pipeline source (CLAUDE_PLUGIN_ROOT env var → recursive scan for `lsp-manifest.json`) + extend discoverManifests opts + wire env in index.ts. Codebase-verified starting state: discover.ts 189 lines, 8 exports + 1 private helper from R8a/R8b; index.ts 4 env vars; tests 659 lines / 31 green of 142 total. Node 22 readdirSync recursive+withFileTypes confirmed via `node -e` smoke. No glob library needed. ONE OPEN DESIGN DECISION flagged for SRE: scope of CLAUDE_PLUGIN_ROOT scan — (A) root itself vs (B) root's parent. Skeleton defaults to (A); SRE must confirm.
 - [2026-04-19] [Seth] Design decision resolved during architectural riff session: scan scope is **(B) sibling plugins in marketplace cache**. Rationale: `lsp-manifest.json` is a cross-plugin discovery contract for the whole toolkit family (fork wrappers, chunkhound, pyright-mcp, future LSP-providing plugins), not a fork-wrapper-only surface. Skeleton updated — "DESIGN DECISION" section rewrote as locked choice; Step 0 (empirical CC cache layout probe) added to implementation; `SCAN_PARENT_LEVELS` constant introduced for 1-vs-2 parent-walk depending on observed layout; unexpected layouts STOP-escalate rather than silent fall back; anti-patterns updated; 1 new SC added.
+- [2026-04-19T06:50:26Z] [Seth] Knowledge capture (R8c discovery surfaces):
+
+Three LSP-declaration surfaces exist in CC's plugin cache:
+1. plugin.json with inline lspServers block (CC-native, schema-documented)
+2. .lsp.json at plugin root (CC-native, sibling-file form, parallel to .mcp.json)
+3. lsp-manifest.json (lsp-mcp custom format)
+
+CC-native schema (inline and standalone share shape):
+  Required: command, extensionToLanguage
+  Optional: args, transport, env, initializationOptions, settings,
+            workspaceFolder, startupTimeout, shutdownTimeout,
+            restartOnCrash, maxRestarts
+
+Cache layout: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/<contents>
+\$CLAUDE_PLUGIN_ROOT resolves to innermost <version>/
+
+Schema delta lsp-mcp's PluginManifest vs CC-native:
+- lsp-mcp richer on: capabilities.impls.stringPrefilter hints
+- CC-native richer on: lifecycle (startupTimeout, restartOnCrash, maxRestarts)
+- Neither is a superset.
+
+References for future sessions (don't re-derive):
+- Skill: plugin-dev:plugin-structure (cache layout, \$CLAUDE_PLUGIN_ROOT semantics)
+- CC docs: plugins-reference.md (lspServers schema, plugin.json full field list)
