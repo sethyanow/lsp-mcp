@@ -1,11 +1,15 @@
 ---
 id: lspm-mcp
 title: R8c — $CLAUDE_PLUGIN_ROOT plugin-tree glob source
-status: open
+status: active
 type: task
 priority: 1
+owner: claude-r8c
 parent: lspm-cnq
 ---
+
+
+
 
 
 
@@ -46,46 +50,65 @@ Soft-skip policy (match `discoverFromJsonDir` exactly):
 - `root` is a file, not a dir → stderr notice + `[]`
 - `readdirSync` throws (EACCES, loop, etc.) → stderr notice + `[]`
 
-### Scope of the `$CLAUDE_PLUGIN_ROOT` scan — sibling plugins (cross-plugin contract)
+### Scope — walk to cache root, per-plugin latest-version filter
 
-**Locked 2026-04-19.** R8c scans beyond `$CLAUDE_PLUGIN_ROOT` itself to find sibling plugins in the marketplace cache. This makes `lsp-manifest.json` a **cross-plugin discovery contract** for the whole toolkit family (fork wrappers, chunkhound, pyright-mcp, any future LSP-providing plugin), not just Phase 2 fork wrappers. Any plugin that declares `lsp-manifest.json` at its root is picked up by lsp-mcp's R8c scan and routed via multi-candidate.
+**Locked 2026-04-19, refined 2026-04-19 SRE.** R8c walks from `$CLAUDE_PLUGIN_ROOT` up to Claude Code's plugin cache root (3 levels = `../../..`) to find all toolkit-family plugins regardless of marketplace. CC's cache layout is `<cache>/<marketplace>/<plugin>/<version>/<contents>` — empirically verified (probe ran in SRE), undocumented by Anthropic per `claude-code-guide` lookup. `lsp-manifest.json` is the **cross-plugin discovery contract** for the toolkit family (fork wrappers, chunkhound, pyright-mcp, any future LSP-providing plugin).
+
+When a plugin has multiple versions installed simultaneously (CC keeps old hash/semver dirs around), the walker picks the newest **per plugin**: parse `^\d+\.\d+\.\d+` as semver and numeric-compare descending; fall back to mtime descending for hash-named dirs. Stale versions never contribute manifests — filtered at discovery, not at merge.
 
 Implementation:
 
 ```ts
-// resolvePluginTreeEnv normalizes CLAUDE_PLUGIN_ROOT to the marketplace cache
-// root (one level up from lsp-mcp's own plugin dir) so the walker sees siblings.
-// Scan scope = path.resolve(root, '..').
+// resolvePluginTreeEnv normalizes CLAUDE_PLUGIN_ROOT to the cache root.
+// Walk 3 levels: <mkt>/<plug>/<ver>/ layout is stable enough for MVP glue.
+// Scan root = path.resolve(raw, '../../..').
 ```
 
-Exact parent-walk depth (one level vs two) depends on CC's cache layout: is `$CLAUDE_PLUGIN_ROOT/..` the marketplace-scoped siblings dir, or a hash-versioned subdir of the same plugin? **Requires empirical probe** under a real CC marketplace install before implementation — same approach `lspm-501` used for verifying `${CLAUDE_PLUGIN_ROOT}` resolution. Add Step 0 to the implementation: probe `ls $CLAUDE_PLUGIN_ROOT/..` under CC; if it shows siblings, use `..`; if it shows hash dirs, use `../..`.
+**Undocumented-layout coupling accepted.** The `claude-code-guide` agent confirmed (2026-04-19) that CC's plugin cache layout, active-version selection, and sibling-discovery APIs are all undocumented implementation details. If CC reshuffles the layout in a future release, R8c's walker breaks visibly (no manifests discovered, plugin-tree count drops to 0, stderr notice on missing root) — one-walker fix, one-test update. Not an existential risk for toolkit glue. Documented as a known coupling; no escape hatch added in Phase 1.
 
-Seam contract (Phase 1 → Phase 2) holds unchanged — fork wrappers ship as sibling plugins with their own `lsp-manifest.json`. The contract widens beyond fork wrappers: any toolkit-family plugin declares LSPs the same way. `using-lsp-mcp` skill documents this convention for plugin authors.
+Seam contract (Phase 1 → Phase 2) holds — fork wrappers ship as sibling plugins with `lsp-manifest.json` at their plugin root. `using-lsp-mcp` skill will document the convention for plugin authors.
 
 ### New export: `resolvePluginTreeEnv`
 
-Symmetric with `resolveManifestsDirEnv`:
+Analogue to `resolveManifestsDirEnv`, but walks up 3 levels to the cache root:
 
 ```ts
 export function resolvePluginTreeEnv(raw: string | undefined): string | undefined;
 ```
 
 - `undefined` → `undefined`
-- `""` (empty string) → `undefined` (guards against `path.resolve('')` → cwd scan)
-- absolute path → unchanged (via `path.resolve`)
-- relative path → resolved against `process.cwd()`
+- `""` (empty string) → `undefined` (guards against `path.resolve('', '../../..')` → cwd's grandparent)
+- absolute path → `path.resolve(raw, '../../..')` (walks to cache root)
+- relative path → `path.resolve(cwd, raw, '../../..')`
 
-Doc comment references `CLAUDE_PLUGIN_ROOT` by name.
+Doc comment references `CLAUDE_PLUGIN_ROOT` by name and notes the 3-level walk is deliberate for cross-marketplace sibling discovery.
+
+### Version picker: `pickLatestVersion`
+
+Internal helper (not exported). Given a list of version-dir entries for one plugin, return the newest.
+
+```ts
+interface VersionDir { name: string; fullPath: string; mtimeMs: number; }
+function pickLatestVersion(versions: VersionDir[]): VersionDir | null;
+```
+
+Sort order (descending, first wins):
+1. If both compare-pair entries match `/^(\d+)\.(\d+)\.(\d+)/`, compare major.minor.patch numerically.
+2. If only one parses as semver, semver wins over hash.
+3. If neither parses, mtime-desc decides.
+4. **Tie-break (adversarial):** when the chosen comparator returns 0 (equal semver, equal mtime), fall back to `name` alphabetical ascending. Guarantees second-run idempotency even when filesystem mtime granularity ties two hash dirs.
+
+Returns `null` only for empty input. Pre-release suffixes (`-beta.1`, etc.) are not supported — CC's observed version names are plain semver or opaque hashes, so the regex consumes `^\d+\.\d+\.\d+` and ignores trailing noise.
 
 ### Extraction candidates (REFACTOR-phase decisions)
 
-Two potential extractions surface during Cycles 2 and 4:
+Potential extractions surface during Cycles 2/4/6:
 
-1. **`parseManifestFile(full: string, sourceKind: SourceKind): DiscoveredManifest | null`** — extracted from `discoverFromJsonDir`'s per-file read+parse+validate loop. Both `discoverFromJsonDir` and `discoverPluginTreeManifests` would delegate. REFACTOR-phase decision in Cycle 2 after `discoverPluginTreeManifests` GREEN. If the inline code is ≤10 lines, extraction may be premature.
+1. **`parseManifestFile(full: string, sourceKind: SourceKind): DiscoveredManifest | null`** — extracted from `discoverFromJsonDir`'s per-file read+parse+validate loop. `discoverPluginTreeManifests` runs the same loop on every `lsp-manifest.json` it finds. REFACTOR-phase decision in Cycle 2 after walker GREEN. Likely extract this time because the walker now has three nested loops above it — keeping parse inline compounds vertical indent.
 
-2. **`resolveDirEnv(raw: string | undefined): string | undefined`** — identical body in `resolveManifestsDirEnv` and `resolvePluginTreeEnv`. REFACTOR-phase decision in Cycle 4. Alternative: keep separate so each can have env-var-specific doc comments.
+2. **`resolveDirEnv(raw: string | undefined, parentWalk?: string): string | undefined`** — shared resolver; `resolveManifestsDirEnv` passes no parentWalk, `resolvePluginTreeEnv` passes `'../../..'`. REFACTOR-phase decision in Cycle 4. Alternative: keep separate because their doc comments name different env vars for grep-ability.
 
-Both are ASSESSMENTS, not mandates. Document findings either way — don't extract without a structural reason.
+Both are ASSESSMENTS, not mandates. Document findings either way.
 
 ### Extended `discoverManifests` signature
 
@@ -129,31 +152,20 @@ Source-kind iteration order is insertion order = discovery order → natural pri
 
 ## Implementation
 
-### Step 0 — Empirical probe: CC cache layout
+### Step 0 — Design locked (SRE probe recorded 2026-04-19)
 
-Before writing the walker, confirm the cache structure under a real CC marketplace install. From a CC session with lsp-mcp installed, run:
+Cache layout was verified in SRE via local probe of `~/.claude/plugins/cache/`:
 
-```bash
-echo "$CLAUDE_PLUGIN_ROOT"
-ls "$CLAUDE_PLUGIN_ROOT"
-ls "$CLAUDE_PLUGIN_ROOT/.."
-ls "$CLAUDE_PLUGIN_ROOT/../.."
+```
+<cache>/<marketplace>/<plugin>/<version>/<contents>
 ```
 
-Expected observations:
-- `$CLAUDE_PLUGIN_ROOT/..` shows either (a) sibling plugin dirs by name (use `..` for scan) or (b) hash-versioned subdirs of the current plugin (use `../..`).
-- Whichever level has dirs named after plugins is the scan root.
+- `lsp-mcp/lsp-mcp/<hash>/` — single-plugin marketplace, hash-versioned
+- `pyright-marketplace/pyright-mcp/0.1.0/` — different marketplace, semver-versioned
+- `claude-plugins-official/<plugin>/<hash>/` — multi-plugin marketplace
+- `agent-deck/agent-deck/<hash>/` had two hash subdirs simultaneously — drives the latest-version filter requirement
 
-Record findings in `bn log lspm-mcp`. Choose `SCAN_PARENT_LEVELS = 1` or `2` accordingly. `resolvePluginTreeEnv` implementation then becomes:
-
-```ts
-export function resolvePluginTreeEnv(raw: string | undefined): string | undefined {
-    if (!raw || raw.length === 0) return undefined;
-    return path.resolve(raw, SCAN_PARENT_LEVELS === 1 ? '..' : '../..');
-}
-```
-
-If empirical probe reveals an unexpected layout (e.g., siblings are not discoverable from `$CLAUDE_PLUGIN_ROOT` at any reasonable parent level), **STOP and surface to user** — do not silently fall back to scanning the plugin's own root, because that would collapse the cross-plugin contract.
+`$CLAUDE_PLUGIN_ROOT/../../..` resolves to the cache root; scan scope **locked to 3 levels**. No runtime probe in the walker. Undocumented-layout coupling accepted per user call — MVP glue, not platform infrastructure.
 
 ### Step 1 — RED: pluginTreeRoot-absent test
 
@@ -179,45 +191,59 @@ export function discoverPluginTreeManifests(root: string): DiscoveredManifest[] 
 
 Run → Step 1 test passes.
 
-### Step 3 — RED: recursive walker finds `lsp-manifest.json` at multiple depths
+### Step 3 — RED: walker on CC-shaped fixture (multi-marketplace, multi-version)
 
 Extend `discover.test.ts`. New test inside `describe('discoverPluginTreeManifests')`:
 
-- `mkdtempSync` root
-- `mkdirSync` `<root>/fork-a`, `<root>/fork-a/nested`, `<root>/fork-b`
-- Write fork-a manifest at `<root>/fork-a/lsp-manifest.json` (name `'fork-a-mf'`) via `mkManifest`
-- Write fork-b manifest at `<root>/fork-b/lsp-manifest.json` (name `'fork-b-mf'`)
-- Write a decoy at `<root>/fork-a/nested/other.json` (wrong filename — MUST NOT match)
-- Call `discoverPluginTreeManifests(root)`
+Build a fixture mimicking `<cache>/<mkt>/<plug>/<ver>/<contents>`:
+- `mkdtempSync` cache root
+- `<cache>/mkt-a/plug-a/1.0.0/lsp-manifest.json` (name `'plug-a-v1'`, cmd `['v1']`)
+- `<cache>/mkt-a/plug-a/2.0.0/lsp-manifest.json` (name `'plug-a-v2'`, cmd `['v2']`) — SHOULD WIN over v1
+- `<cache>/mkt-a/plug-b/abc123hash/lsp-manifest.json` (name `'plug-b-hash'`)
+- `<cache>/mkt-b/plug-c/0.1.0/nested/deep/lsp-manifest.json` (name `'plug-c-deep'`) — nested-depth match
+- `<cache>/mkt-b/plug-c/0.1.0/other.json` decoy (wrong filename)
+- Call `discoverPluginTreeManifests(cacheRoot)`
 
 Assertions:
-- `length === 2`
-- names `['fork-a-mf', 'fork-b-mf']` (alphabetical by sourcePath)
+- `length === 3` (v1 filtered out by latest-version pick; decoy filtered by filename)
+- names include `'plug-a-v2'`, `'plug-b-hash'`, `'plug-c-deep'`
+- `'plug-a-v1'` NOT in names
+- entry for `plug-a-v2` has `server.cmd[0] === 'v2'`
 - all entries `sourceKind === 'plugin-tree'`
-- all entries' `sourcePath` ends with `lsp-manifest.json`
+- results sorted by `sourcePath` alphabetically
 
 Run → expect failure (minimal returns `[]`).
 
-### Step 4 — GREEN + REFACTOR: implement walker
+### Step 4 — GREEN + REFACTOR: implement cache-walker (per-layer try/catch)
 
-Flesh out the body with statSync.isDirectory guard, single try/catch wrapping statSync + recursive readdirSync, filter for `isFile()` + `name === 'lsp-manifest.json'`, sort matches by sourcePath, then per-file read+parse+validate.
+Flesh out with **per-layer try/catch** (adversarial finding — single outer try/catch would drop all siblings on one bad subdir):
 
-**REFACTOR-phase assessment (mandatory):** the per-file read+parse+validate loop is about to duplicate between `discoverFromJsonDir` and `discoverPluginTreeManifests`. Extract `parseManifestFile(full: string, sourceKind: SourceKind): DiscoveredManifest | null` only if BOTH of:
-- (a) the duplication is ≥8 lines
-- (b) the shared semantics (soft-skip per file, stderr wording, schema validation) are genuinely identical across callers
+1. **Entry guard:** `statSync(cacheRoot).isDirectory()` inside try/catch (soft-skip → stderr + `[]`). If cacheRoot vanishes mid-operation, ENOENT here.
+2. **Layer 1 (marketplaces):** try/catch around `readdirSync(cacheRoot, {withFileTypes:true})`. On failure → stderr + `[]`. Filter `e.isDirectory()`.
+3. **Layer 2 (plugins):** for each marketplace, try/catch around `readdirSync(mktDir, ...)`. On failure → stderr notice naming the marketplace, continue to next marketplace. Filter `e.isDirectory()`.
+4. **Layer 3 (versions):** for each plugin, try/catch around `readdirSync(plugDir, ...)` + per-version-dir `statSync(fullPath).mtimeMs`. On failure → stderr notice naming the plugin, continue. Collect `VersionDir[]`, call `pickLatestVersion(versions)` → winning version or `null` (skip if null).
+5. **Layer 4 (winner recursive):** for the winning version only, try/catch around `readdirSync(winner.fullPath, {recursive:true, withFileTypes:true})`. On failure (EACCES mid-walk, symlink loop, version dir deleted) → stderr notice, skip this plugin, continue. Filter `e.isFile() && e.name === 'lsp-manifest.json'`, collect full paths.
+6. **Per-file parse:** read + `JSON.parse` + `PluginManifestSchema.safeParse`. Soft-skip on failure (R8b pattern): stderr one line, continue. Push `{manifest, sourceKind:'plugin-tree', sourcePath}`.
+7. Outer sort by `sourcePath` ascending before return.
 
-If yes: extract the helper, collapse both callers. If no: inline and document the call.
+Stderr wording: `[lsp-mcp] plugin-tree: <layer> at <path> unreadable — skipping` where `<layer>` is one of `cache root`, `marketplace`, `plugin`, `version scan`.
 
-Run full test suite → expect 142 baseline + Step 1 + Step 3 = 144 green. No regressions in R8a/R8b tests.
+**REFACTOR-phase assessment (mandatory):** the read+parse+validate tail is now duplicated verbatim between `discoverFromJsonDir` and `discoverPluginTreeManifests`. Extract `parseManifestFile(full, sourceKind)` if both:
+- (a) duplication is ≥8 lines,
+- (b) stderr wording and schema semantics are genuinely identical.
 
-### Step 5 — RED: `resolvePluginTreeEnv` 4-case matrix
+Document either decision. Also assess extracting `pickLatestVersion` and/or a layer-walker helper if the walker body still reads as four nested loops — a named helper flattens intent.
 
-Extend `discover.test.ts`. New `describe('resolvePluginTreeEnv')` with 4 tests matching `resolveManifestsDirEnv` shape:
+Run full suite → 142 baseline + Step 1 + Step 3 = 144 green. No R8a/R8b regressions.
+
+### Step 5 — RED: `resolvePluginTreeEnv` 4-case matrix (with 3-level parent walk)
+
+Extend `discover.test.ts`. New `describe('resolvePluginTreeEnv')` with 4 tests:
 
 - `undefined` → `undefined`
 - `''` → `undefined`
-- absolute path → unchanged (via `path.resolve`)
-- relative path `'my-tree'` → `path.resolve(process.cwd(), 'my-tree')`
+- absolute path `/foo/cache/mkt/plug/ver` → `/foo/cache` (walks `../../..`)
+- relative path `'mkt/plug/ver'` → `path.resolve(process.cwd(), 'mkt/plug/ver', '../../..')` = cwd
 
 Import `resolvePluginTreeEnv`.
 
@@ -225,9 +251,15 @@ Run → expect TS2305.
 
 ### Step 6 — GREEN + REFACTOR: implement `resolvePluginTreeEnv`
 
-Add export matching `resolveManifestsDirEnv` body. Doc comment references `CLAUDE_PLUGIN_ROOT`.
+```ts
+export function resolvePluginTreeEnv(raw: string | undefined): string | undefined {
+    return raw && raw.length > 0 ? path.resolve(raw, '../../..') : undefined;
+}
+```
 
-**REFACTOR-phase assessment:** extract shared `resolveDirEnv` only if the doc comments don't need env-var-specific references. Likely skip — each resolver's doc comment names its specific env var for grep-ability. Document the decision either way.
+Doc comment: name `CLAUDE_PLUGIN_ROOT`, note 3-level walk targets CC's cache root (`<cache>/<mkt>/<plug>/<ver>/` layout), note layout is undocumented but observed and stable enough for MVP.
+
+**REFACTOR-phase assessment:** extracting a shared `resolveDirEnv(raw, parentWalk?)` saves ~1 line per caller but loses env-var-specific doc comments. Skip unless a third caller appears. Document the decision.
 
 Run → 8 tests for resolvers total (4 R8b + 4 R8c).
 
@@ -236,10 +268,10 @@ Run → 8 tests for resolvers total (4 R8b + 4 R8c).
 Extend `discover.test.ts`. New test inside `describe('discoverManifests')`:
 
 - Built-in `pyright` exists (shipped, name `'pyright'`)
-- Plugin-tree fixture: `mkdtempSync` root; write `<root>/fork/lsp-manifest.json` with `name: 'pyright'`, cmd `['tree-pyright']`
+- Plugin-tree fixture: `mkdtempSync` cacheRoot; write `<cacheRoot>/mkt/fork/1.0.0/lsp-manifest.json` with `name: 'pyright'`, cmd `['tree-pyright']` (CC-shaped layout required)
 - Config-file fixture via `writeConfigFixture`: `pyright` version 88, cmd `['config-pyright']`
 - Manifests-dir fixture: `<mDir>/pyright.json` cmd `['dir-pyright']` + `<mDir>/bazel-lsp.json` cmd `['dir-bazel']`
-- Call `discoverManifests({ configPath, pluginTreeRoot: root, manifestsDir: mDir })`
+- Call `discoverManifests({ configPath, pluginTreeRoot: cacheRoot, manifestsDir: mDir })`
 
 Assertions:
 - Final `pyright`: `sourceKind === 'manifests-dir'`, `server.cmd[0] === 'dir-pyright'`
@@ -279,7 +311,10 @@ Update the `discoverManifests` call. `bun run typecheck` clean, `bun run test` g
 
 ### Step 10 — Smoke tests
 
-Write `/tmp/lspm-mcp-smoke.sh` (follow the R8b pattern — build, mktemp, two smoke passes with `grep -q` assertions, cleanup). Smoke 1: fork manifest with new name `'fork-pyright'` → assert `plugin-tree: 1` in stderr + `loaded 13 manifests`. Smoke 2: fork manifest named `'pyright'` → assert `"pyright" from plugin-tree ... overrides prior builtin`.
+Write `/tmp/lspm-mcp-smoke.sh` following R8b pattern — build, mktemp, smoke passes with `grep -q` assertions, cleanup. Fixture root must be CC-shaped (`<root>/mkt/plug/ver/<contents>`):
+
+- **Smoke 1 (add):** fork manifest with new name `'fork-pyright'` at `<root>/mkt-x/fork/1.0.0/lsp-manifest.json`. Set `CLAUDE_PLUGIN_ROOT=<root>/mkt-x/fork/1.0.0` (synthetic — resolver walks `../../..` to `<root>`). Assert `plugin-tree: 1` in stderr + `loaded 13 manifests`.
+- **Smoke 2 (override):** same layout, manifest named `'pyright'`. Assert `"pyright" from plugin-tree ... overrides prior builtin`.
 
 Run `bash /tmp/lspm-mcp-smoke.sh`. Record both stderr outputs in `bn log lspm-mcp`.
 
@@ -287,14 +322,22 @@ Run `bash /tmp/lspm-mcp-smoke.sh`. Record both stderr outputs in `bn log lspm-mc
 
 Add `describe('discoverPluginTreeManifests — adversarial')`. Patterns:
 
-- **Empty**: root exists, zero `lsp-manifest.json` files → `[]`
-- **Type boundary**: root points at a file, not dir → soft-skip stderr "not a directory"
-- **Deep nesting**: `lsp-manifest.json` at depth 5+ → still found
-- **Semantically hostile: dir named `lsp-manifest.json`** → filtered by `isFile()`
-- **Semantically hostile: invalid JSON** → soft-skip per-file
-- **Semantically hostile: non-matching filename** (`plugin-manifest.json`, `lsp-manifest.txt`) → filtered
+- **Empty cache root**: root exists, zero marketplace/plugin/version dirs → `[]`
+- **Cache root has a file at marketplace-level**: non-dir entry at layer 1 → skipped, other marketplaces still walked
+- **Type boundary**: root points at a file, not dir → soft-skip stderr "not a directory" → `[]`
+- **Deep nesting inside version dir**: `lsp-manifest.json` at depth 5+ below version root → still found
+- **Semantically hostile: dir named `lsp-manifest.json`** under a version → filtered by `isFile()`
+- **Semantically hostile: invalid JSON** → soft-skip per-file + stderr, other manifests unaffected
+- **Semantically hostile: non-matching filenames** (`plugin-manifest.json`, `lsp-manifest.txt`) → filtered
+- **Latest-version filter — mixed semver**: plugin has `1.0.0`, `1.0.1`, `0.9.9` → only `1.0.1` contributes manifests
+- **Latest-version filter — mixed semver + hash**: plugin has `1.0.0` + `abc123hash` → semver wins regardless of mtime
+- **Latest-version filter — all hash**: plugin has two hash dirs, distinct mtimes → newer mtime wins
+- **Latest-version filter — mtime tie**: two hash dirs with identical `mtimeMs` (`utimesSync` to force) → alphabetically-first name wins (deterministic tie-break)
+- **Per-layer EACCES soft-skip**: marketplace-A dir has perms stripped, marketplace-B unaffected → stderr notice names marketplace-A, marketplace-B's manifests still discovered
+- **Version dir vanishes mid-walk**: fixture sets up winning version, test harness renames it before inner recursive scan fires (via a spy/hook or by deleting after layer-3 pick) → per-plugin soft-skip, other plugins unaffected. If unit-level injection is awkward, skip and rely on the try/catch code-path being present + stderr spy — document the gap.
 - **Second-run idempotency**
-- **Self-referential**: `pluginTreeRoot` === repo root (has `manifests/` subdir with non-`lsp-manifest.json` files) → zero matches (filename convention prevents collision)
+- **Plugin dir with zero version subdirs** → plugin skipped cleanly, no crash
+- **Self-referential**: `pluginTreeRoot` points inside lsp-mcp's own repo (so `manifests/` with per-LSP `<name>.json` sits under it) → filename convention prevents any match, still `[]`
 
 Each adversarial test: RED → verify expected failure mode → confirm GREEN. Apply Three-Question Framework to each GREEN per the stress-test skill.
 
@@ -328,86 +371,148 @@ Do NOT create follow-up tasks. Sub-epic `lspm-cnq` still has other open SC (PATH
 
 ## Success Criteria
 
-- [ ] `src/discover.ts` exports `discoverPluginTreeManifests(root: string): DiscoveredManifest[]`
-- [ ] `src/discover.ts` exports `resolvePluginTreeEnv(raw: string | undefined): string | undefined` with empty-string-as-unset semantics matching `resolveManifestsDirEnv`; resolves to the marketplace-siblings dir (via parent-walk) not to `$CLAUDE_PLUGIN_ROOT` itself
-- [ ] Step 0 probe under actual CC install recorded in bn log; `SCAN_PARENT_LEVELS` (1 or 2) chosen based on observed cache layout; unexpected layouts STOP and escalate, not silently fall back
-- [ ] Walker uses `readdirSync({recursive: true, withFileTypes: true})` with `e.isFile() && e.name === 'lsp-manifest.json'` filter; no glob library dep
-- [ ] Results tagged `sourceKind: 'plugin-tree'` with `sourcePath: <full file path>`; sorted alphabetically by sourcePath
-- [ ] Soft-skip policy: root absent, root is file, readdir error all produce stderr + `[]` (never throw)
+- [ ] `src/discover.ts` exports `discoverPluginTreeManifests(cacheRoot: string): DiscoveredManifest[]`
+- [ ] `src/discover.ts` exports `resolvePluginTreeEnv(raw: string | undefined): string | undefined` with empty-string-as-unset semantics; resolves via `path.resolve(raw, '../../..')` to CC's cache root (3-level walk locked)
+- [ ] Walker treats `cacheRoot` as `<cache>/<mkt>/<plug>/<ver>/<contents>`: iterates marketplaces, then plugins, then version-dirs; per plugin picks newest version via `pickLatestVersion` (semver-desc, mtime-desc fallback, semver beats hash on mixed input); scans only the winning version recursively for `lsp-manifest.json`
+- [ ] `pickLatestVersion` helper implemented: `^(\d+)\.(\d+)\.(\d+)` semver parse + numeric compare desc; non-semver falls back to `mtimeMs` desc; semver entries win over hash entries when mixed
+- [ ] Filter is `e.isFile() && e.name === 'lsp-manifest.json'`; no glob library dep
+- [ ] Results tagged `sourceKind: 'plugin-tree'` with `sourcePath: <full file path>`; final output sorted alphabetically by sourcePath
+- [ ] Soft-skip policy: cacheRoot absent, cacheRoot is file, readdir error at any layer all produce stderr + `[]` (never throw); per-file parse errors soft-skip individually with stderr
 - [ ] `discoverManifests` signature accepts optional `pluginTreeRoot?: string`; merge order `[builtins, pluginTree, configFile, manifestsDir]`
 - [ ] R8a single-arg + R8b 2-arg opts forms continue to work; 142 baseline tests stay green
 - [ ] `src/index.ts` reads `CLAUDE_PLUGIN_ROOT` via `resolvePluginTreeEnv`; passes `pluginTreeRoot` into `discoverManifests`
-- [ ] `src/index.ts` doc comment lists all 5 env vars with descriptions; `CLAUDE_PLUGIN_ROOT` notes "set by Claude Code"
+- [ ] `src/index.ts` doc comment lists all 5 env vars with descriptions; `CLAUDE_PLUGIN_ROOT` notes "set by Claude Code; 3-level walk to cache root is undocumented-CC-layout coupling accepted for MVP"
 - [ ] Observability line renders `plugin-tree: N` when source active
-- [ ] Four-way collision merge test verifies: builtin → plugin-tree → config-file → manifests-dir chain override; three stderr chain lines; bazel-lsp slot preservation through 4-batch chain
-- [ ] Adversarial battery covers: empty root, type boundary, deep nesting, dir-named-lsp-manifest.json, invalid JSON, non-matching filename, second-run idempotent, self-ref to repo root
-- [ ] Smoke 1 (add): `CLAUDE_PLUGIN_ROOT=$tmpdir` with fork manifest → stderr contains `plugin-tree: 1` + `loaded 13 manifests` (asserted via `grep -q`)
-- [ ] Smoke 2 (override): fork `lsp-manifest.json` named `pyright` → stderr contains `"pyright" from plugin-tree ... overrides prior builtin` (asserted via `grep -qE`)
+- [ ] Four-way collision merge test verifies: builtin → plugin-tree → config-file → manifests-dir chain override; three stderr chain lines; bazel-lsp slot preservation through 4-batch chain; plugin-tree fixture uses CC-shaped `<cache>/mkt/plug/ver/` layout
+- [ ] Adversarial battery covers: empty cache root, non-dir marketplace entry skipped, type boundary (cacheRoot is a file), deep nesting in winning version, dir-named-lsp-manifest.json, invalid JSON, non-matching filename, latest-version mixed-semver, latest-version mixed-semver+hash, latest-version all-hash (mtime), **mtime-tie name tie-break** (two hash dirs with equal mtime → alphabetically-first name wins), **per-layer EACCES soft-skip** (unreadable marketplace-A doesn't kill discovery of plugins in marketplace-B), **version dir vanishes mid-walk** (ENOENT during winner recursive scan soft-skips the plugin only), zero-version-dirs plugin, second-run idempotent, self-ref to lsp-mcp repo
+- [ ] Walker emits stderr with component-specific wording at each layer: `cache root`, `marketplace`, `plugin`, `version scan` — test at least one layer's message shape
+- [ ] Smoke 1 (add): synthetic CC-shaped tree; `CLAUDE_PLUGIN_ROOT=$tmpdir/mkt/plug/ver` → stderr contains `plugin-tree: 1` + `loaded 13 manifests`
+- [ ] Smoke 2 (override): same layout, manifest named `pyright` → stderr contains `"pyright" from plugin-tree ... overrides prior builtin`
 - [ ] `bun run test` green; `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
 - [ ] Sub-epic `lspm-cnq` SC "Layered manifest discovery ..." flipped `[ ]` → `[x]` — R8c closes the bullet
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R8 layered discovery complete (R8a/R8b/R8c delivered)
 
 ## Anti-Patterns
 
-- **NO glob library dependency.** Node's built-in recursive `readdirSync` + exact filename match is sufficient. Pulling in minimatch/globby for this is scope creep.
-- **NO pretending the scan scope is internal-only.** Scope is deliberately sibling plugins in the marketplace cache — `lsp-manifest.json` is a cross-plugin contract. If empirical probing (Step 0) reveals the cache layout is different than expected, surface to user — do NOT silently fall back to scanning only the plugin's own root.
+- **NO glob library dependency.** Node's built-in `readdirSync` + exact filename match is sufficient. Pulling in minimatch/globby for this is scope creep.
+- **NO naive-recursive walk across the entire cache.** Using `readdirSync({recursive:true})` on `cacheRoot` directly would pick up manifests from stale versions. Walk structured (mkt → plug → version-pick → recursive-within-winner) — otherwise the latest-version filter is bypassed and collision noise returns.
 - **NO reading `lsp-manifest.json` as a dir entry.** Filter `e.isFile()` — a subdirectory named `lsp-manifest.json` must be skipped cleanly.
-- **NO confusing builtins with plugin-tree entries.** The `manifests/` dir contains `<manifestname>.json`, not `lsp-manifest.json` — the naming convention is distinct by design. If BUILTIN_DIR were ever pointed at via `CLAUDE_PLUGIN_ROOT`, no collision should result (adversarial test verifies).
+- **NO confusing builtins with plugin-tree entries.** The `manifests/` dir contains `<manifestname>.json`, not `lsp-manifest.json` — the naming convention is distinct by design.
 - **NO breaking R8a/R8b signatures.** `pluginTreeRoot` is optional. Existing callers unchanged.
 - **NO hard-exit on malformed plugin-tree manifest.** Match R8b's soft-skip-with-stderr policy. Plugin trees are bulk sources; single bad file should skip, not crash.
 - **NO removing R8a/R8b fixture helpers.** `writeConfigFixture`, `mkManifest`, `mkDiscovered` are reused by R8c tests.
-- **NO changing merge order to put plugin-tree above config-file.** The sub-epic SC locks the order: builtins → plugin-tree → config-file → manifests-dir. User-authored config files and user-pointed dirs both outrank fork-wrapper auto-discovery.
+- **NO changing merge order to put plugin-tree above config-file.** The sub-epic SC locks the order: builtins → plugin-tree → config-file → manifests-dir. User-authored config files and user-pointed dirs both outrank plugin-tree auto-discovery.
+- **NO adding a semver library.** `^\d+\.\d+\.\d+` regex + numeric compare is enough for CC's observed version-dir names. Pre-release suffixes, build metadata, and v-prefixes are out of scope — document the limitation if we hit one.
+- **NO platform-grade claims about sibling discovery.** This is MVP glue against an undocumented CC cache shape. Don't build escape hatches or registry abstractions preemptively; fix the walker if CC changes layout.
 - **NO mandatory extraction of `parseManifestFile` or `resolveDirEnv`.** Both are REFACTOR-phase ASSESSMENTS. Extract only if the structural case is genuine; document the call either way.
 
 ## Key Considerations
 
-- **Scan scope — LOCKED 2026-04-19 to sibling plugins.** `lsp-manifest.json` is a cross-plugin contract for the whole toolkit family (fork wrappers, chunkhound, pyright-mcp, future LSP-providing plugins). R8c walks up from `$CLAUDE_PLUGIN_ROOT` to the marketplace cache dir and scans siblings. Exact walk depth (`..` vs `../..`) requires empirical probe (Step 0) against actual CC cache layout before writing the walker.
-- **Self-reference hazard.** When `CLAUDE_PLUGIN_ROOT` points at a dir that contains `lsp-manifest.json` files shadowing builtin names, the override is logged and applied correctly. Adversarial test verifies. The naming convention (`lsp-manifest.json` vs `<name>.json` in `manifests/`) prevents collision between plugin-tree and builtin sources when `CLAUDE_PLUGIN_ROOT` points at lsp-mcp's own repo.
-- **Depth limit.** `readdirSync({ recursive: true })` has no depth cap. Pathological trees (symlink loops without cycle detection, 10k+ dirs) could slow startup. Node's recursive walker detects symlink cycles per the Node docs — verify behavior if a test flakes. Not a correctness concern for MVP; document as a known limitation if it surfaces.
-- **Symlink traversal.** `readdirSync` follows symlinks by default. Fork wrappers shipping symlinked `node_modules` would be traversed. Cycle protection relies on Node's built-ins. Out of scope to add manual cycle detection.
-- **Windows path separators.** `path.join(e.parentPath, e.name)` handles `/` vs `\`. Tests checking `sourcePath` endings should use `lsp-manifest.json` as the suffix (Node normalizes internally).
-- **Empty-string env var.** Same semantics as `resolveManifestsDirEnv` — `""` treated as unset to prevent `path.resolve('')` → cwd scan. Verified by 4-case resolver test.
-- **`$CLAUDE_PLUGIN_ROOT` vs `LSP_MCP_ROOT` separation.** `LSP_MCP_ROOT` is the LSP workspace root (passed to each `LspServer`). `CLAUDE_PLUGIN_ROOT` is the plugin-tree discovery root. Don't conflate or share a variable.
-- **`parseManifestFile` extraction trigger.** Two callers is the minimum threshold. If R8c's walker inlines read+parse+validate without becoming ugly, don't extract. If the inline code exceeds ~10 lines of duplication OR error-message wording drifts between callers, extract. Decision goes in REFACTOR-phase assessment of Cycle 2.
-- **`resolveDirEnv` extraction trigger.** Two identical 1-line resolvers. Extraction saves 1 line per caller at the cost of losing env-var-specific doc comments. Likely skip; document the no-op decision in REFACTOR-phase assessment.
+- **Undocumented-layout coupling (locked 2026-04-19).** Anthropic's docs don't specify CC's cache shape, active-version selection, or any sibling-discovery API (confirmed via `claude-code-guide`). R8c's walker depends on the observed layout `<cache>/<marketplace>/<plugin>/<version>/<contents>` and the locked assumption that `$CLAUDE_PLUGIN_ROOT/../../..` is the cache root. If CC reshuffles this in a future release: walker yields zero plugin-tree manifests, stderr emits "no matching layout" notice, one patch in `discover.ts` restores function. Accepted MVP trade-off — no escape hatch, no abstraction layer. Fix on breakage.
+- **Latest-version per plugin.** The walker picks one version dir per `<marketplace>/<plugin>` pair; stale installs never contribute manifests. Semver parseable (`^\d+\.\d+\.\d+`) wins numerically; hash-only dirs sort by mtime; mixed semver+hash resolves semver-first. This is the intended fix for the `agent-deck/agent-deck/{hash1,hash2}` duplicate-install pattern observed in the cache.
+- **Self-reference hazard.** When `$CLAUDE_PLUGIN_ROOT` points inside lsp-mcp's own repo during dev (so `../../..` may resolve outside the cache), the walker either finds no `lsp-manifest.json` files (builtin `manifests/` holds `<name>.json`, not the contract filename) or scans an unrelated tree and emits stderr. Either is safe; adversarial test pins it.
+- **Depth limit.** `readdirSync({recursive:true})` inside the winning version dir has no cap. Fork wrappers with huge `node_modules` trees could slow startup. Node 20+ detects symlink cycles per docs. Not a correctness concern for MVP; document if it surfaces.
+- **Windows path separators.** `path.join(e.parentPath, e.name)` handles `/` vs `\`. Tests assert on suffix `lsp-manifest.json`, not path shape.
+- **Empty-string env var.** Matches `resolveManifestsDirEnv` — `""` treated as unset to prevent `path.resolve('', '../../..')` from landing at `cwd/../../..`.
+- **`$CLAUDE_PLUGIN_ROOT` vs `LSP_MCP_ROOT` separation.** `LSP_MCP_ROOT` is the LSP workspace root (passed to each `LspServer`). `CLAUDE_PLUGIN_ROOT` is consumed for plugin-tree discovery. Don't conflate.
+- **`parseManifestFile` extraction trigger.** Walker's read+parse+validate tail is now 100% duplicated with `discoverFromJsonDir`'s tail (≥8 lines). Likely extract during Cycle 4 REFACTOR; document the call either way.
+- **`resolveDirEnv` extraction trigger.** Two resolvers now differ only in parent-walk arg (`undefined` vs `'../../..'`). Shared helper saves 2-3 lines but loses env-var-specific doc comments. Lean toward keep-separate; document decision.
 
-## Failure Catalog (pre-SRE)
+## Failure Catalog (post-SRE 2026-04-19)
 
-**Encoding Boundaries: UTF-8 BOM in `lsp-manifest.json` files**
+### `discoverPluginTreeManifests` walker
+
+**Encoding Boundaries: UTF-8 BOM in `lsp-manifest.json`**
 - Assumption: users author clean UTF-8 JSON.
-- Betrayal: Windows-authored `lsp-manifest.json` has BOM prefix.
-- Consequence: `JSON.parse` throws `SyntaxError: Unexpected token`. Soft-skipped by per-file try/catch (same as R8b's handling).
-- Mitigation: inherited from the parse loop. No structural change needed.
+- Betrayal: Windows-authored fork ships `lsp-manifest.json` with BOM prefix.
+- Consequence: `JSON.parse` throws; manifest skipped.
+- Mitigation: per-file try/catch around parse (same as R8b) → stderr + continue. No structural change.
 
-**State Corruption: root points at a regular file**
-- Assumption: `CLAUDE_PLUGIN_ROOT` is a directory.
-- Betrayal: user misconfigures or CC's env export points at a file.
+**State Corruption: cacheRoot points at a regular file**
+- Assumption: `CLAUDE_PLUGIN_ROOT/../../..` is a directory.
+- Betrayal: env var points at a file, or `../../..` lands at a regular file on an unusual install layout.
 - Consequence: `readdirSync` throws `ENOTDIR`.
-- Mitigation: `statSync(root).isDirectory()` guard before recursive read — same pattern as `discoverFromJsonDir`.
+- Mitigation: `statSync(cacheRoot).isDirectory()` guard at entry → stderr + `[]`.
 
-**Dependency Treachery: permission-denied on recursive walk**
-- Assumption: server has read access to every subdirectory under `root`.
-- Betrayal: a subdir has `-r` stripped mid-walk, or `statSync` fails on `root` itself (EACCES).
-- Consequence: `readdirSync({recursive: true})` throws partway through the walk.
-- Mitigation: single try/catch wraps `statSync + readdirSync`. Soft-skip returns `[]` (losing any partial results). Matches R8b's single-catch pattern.
+**Dependency Treachery: EACCES at inner layer (STRUCTURAL — per-layer try/catch)**
+- Assumption: if cacheRoot is readable, descendants are too.
+- Betrayal: one marketplace subdir has perms stripped, or a `node_modules` with weird perms sits inside a version dir.
+- Consequence: a **single outer try/catch drops the entire batch** on one bad subdir. Unacceptable — a broken plugin-A sibling shouldn't hide plugin-B's manifest.
+- Mitigation (structural): per-layer try/catch. Each `readdirSync` call (marketplace layer, plugin layer, version-stat layer, winner-recursive-scan layer) wrapped independently; failure at any layer soft-skips that subtree and continues siblings. See implementation Step 4 — `single try/catch wrapping statSync + readdirSync` guidance is superseded.
 
-**Dependency Treachery: symlink loop**
+**Dependency Treachery: symlink loop inside winning version dir**
 - Assumption: plugin tree has no symlink cycles.
-- Betrayal: fork wrapper ships `node_modules/self -> ..` (self-referential symlink).
-- Consequence: Node's `readdirSync({recursive: true})` SHOULD detect cycles (per Node 20.12+ docs) but the exact behavior differs by OS. If not detected, stack overflow or hang.
-- Mitigation: wrap in try/catch — infinite walk eventually exhausts memory/stack and throws; caught and soft-skipped. If this triggers in practice, add explicit depth limit.
+- Betrayal: fork ships `node_modules/self -> ..`.
+- Consequence: Node 20.12+ `readdirSync({recursive:true})` claims cycle detection but behavior varies by OS. Worst case: infinite walk, stack or memory exhaustion.
+- Mitigation: per-plugin try/catch around inner recursive scan — overflow eventually throws, caught, that plugin skipped. If this ever triggers in practice, add explicit depth cap.
 
 **Temporal Betrayal: file deletion during walk**
 - Assumption: files enumerated by `readdirSync` still exist at `readFileSync` time.
-- Betrayal: user or install tooling deletes a `lsp-manifest.json` between listing and reading.
-- Consequence: `readFileSync` throws `ENOENT`.
-- Mitigation: existing per-file try/catch in the parse loop soft-skips (same as R8b).
+- Betrayal: CC's plugin updater deletes a stale install concurrently.
+- Consequence: `readFileSync` throws ENOENT; or version dir disappears between layer-3 listing and layer-4 recursive scan.
+- Mitigation: per-file try/catch (R8b pattern) AND per-plugin try/catch around the recursive scan.
 
-**State Corruption: two fork wrappers with the same manifest name**
-- Assumption: plugin-tree batch has no internal name collisions.
-- Betrayal: two forks both name themselves `'pyright-fork'`.
-- Consequence: `mergeDiscoveryPipeline` logs "from plugin-tree (...) overrides prior plugin-tree (...)". Final entry is the second one by alphabetical sourcePath sort.
-- Mitigation: deterministic (sort order); documented behavior; stderr makes the shadow visible.
+**Resource Exhaustion: winning version dir with huge `node_modules`**
+- Assumption: recursive scan inside one version dir is bounded by plugin authors' good sense.
+- Betrayal: a fork wrapper ships unbundled `node_modules/` with 50k+ files.
+- Consequence: startup pauses while `readdirSync({recursive:true})` enumerates everything. Walk completes, just slow.
+- Mitigation: accepted trade-off for MVP. If a user reports startup >500ms attributable to plugin-tree, add a skip-dirs filter (`node_modules`, `.git`, etc.) — not preemptively.
+
+**State Corruption: two plugins declare the same `lsp-manifest.json` name**
+- Assumption: plugin-tree batch has internal unique names.
+- Betrayal: `mkt-a/plug-x/.../lsp-manifest.json` and `mkt-b/plug-y/.../lsp-manifest.json` both name themselves `'pyright-fork'`.
+- Consequence: `mergeDiscoveryPipeline` logs "from plugin-tree ... overrides prior plugin-tree ..."; final entry is the later one by alphabetical sourcePath.
+- Mitigation: deterministic (sort order); stderr makes the shadow visible. Documented behavior.
+
+### `pickLatestVersion` helper
+
+**Input Hostility: semver with v-prefix or pre-release tags**
+- Assumption: dir names are plain `^\d+\.\d+\.\d+` or opaque hash.
+- Betrayal: dir named `v1.0.0` or `2.0.0-beta.1`.
+- Consequence: regex doesn't match (leading `v` fails `^\d`); treated as hash → mtime-sorted. Pre-release `2.0.0-beta.1` DOES match (`^\d+\.\d+\.\d+` consumes `2.0.0`, regex ignores `-beta.1`) — compares equal to `2.0.0` proper. For CC's observed names this is a non-issue; flag if it bites.
+- Mitigation: accepted. Documented in the helper spec.
+
+**Temporal Betrayal: mtime tie between two hash dirs (STRUCTURAL — name tie-break)**
+- Assumption: mtime gives a total order.
+- Betrayal: two installs within the same 1-second filesystem granularity (or `cp -a` preserving mtime) → equal `mtimeMs`.
+- Consequence: JS `sort` is stable in V8 but comparator returning 0 means insertion-order-dependent output → **second-run idempotency breaks** under certain Node/V8 combinations.
+- Mitigation (structural): when comparator returns 0 (equal semver or equal mtime), tie-break on `name` alphabetical ascending. Makes walker deterministic regardless of fs state. Update helper spec + add test.
+
+**Input Hostility: version list is empty**
+- Assumption: every plugin has at least one version dir.
+- Betrayal: partially-uninstalled plugin leaves `<cache>/mkt/plug/` empty.
+- Consequence: `pickLatestVersion([])` returns `null`.
+- Mitigation: caller checks for `null` and skips the plugin. Test covers this.
+
+### `resolvePluginTreeEnv` resolver
+
+**Input Hostility: raw === `/` or extremely shallow path**
+- Assumption: `raw` is a plugin version root several levels deep.
+- Betrayal: env sets `CLAUDE_PLUGIN_ROOT=/` (misconfig).
+- Consequence: `path.resolve('/', '../../..')` === `/`. Walker scans `/` as "cache root" — layer 1 filter iterates `/bin`, `/etc`, etc., none match `<mkt>/<plug>/<ver>/` shape.
+- Mitigation: structurally safe — layer filters find no plugins, returns `[]`. Stderr is quiet (no error, just zero results). Accepted.
+
+**Temporal Betrayal: env var absent, then set, between server starts**
+- Assumption: env stable for a given lsp-mcp process.
+- Betrayal: user rearranges env between CC sessions.
+- Consequence: each server start re-reads env — correct by design.
+- Mitigation: N/A, not a bug.
+
+### `discoverManifests` opts extension
+
+**State Corruption: pluginTreeRoot === configPath === manifestsDir**
+- Assumption: the three sources point at distinct trees.
+- Betrayal: user configuration accidentally aliases all three to the same dir.
+- Consequence: same manifests loaded three times, merge chain logs N × 3 overrides. Noisy, not broken.
+- Mitigation: accepted; documented behavior.
+
+### `src/index.ts` wiring
+
+**Input Hostility: `CLAUDE_PLUGIN_ROOT=""` from shell**
+- Assumption: env vars are either unset or meaningful.
+- Betrayal: shell `export CLAUDE_PLUGIN_ROOT=` sets empty string.
+- Consequence: resolver returns `undefined` (explicit empty-string guard), plugin-tree batch skipped.
+- Mitigation: 4-case resolver test covers this.
 
 ## Dependencies
 
@@ -443,3 +548,5 @@ Schema delta lsp-mcp's PluginManifest vs CC-native:
 References for future sessions (don't re-derive):
 - Skill: plugin-dev:plugin-structure (cache layout, \$CLAUDE_PLUGIN_ROOT semantics)
 - CC docs: plugins-reference.md (lspServers schema, plugin.json full field list)
+- [2026-04-19T20:51:32Z] [Seth] SRE (2026-04-19): skeleton spot-checked; discover.ts=188, discover.test.ts=618, 142 tests green across 6 suites confirmed. CC cache layout empirically probed — <cache>/<mkt>/<plug>/<ver>/<contents>; single-plugin marketplaces (lsp-mcp, pyright-marketplace) and multi-plugin (claude-plugins-official) both present; agent-deck has 2 hash-version dirs simultaneously (motivates latest-version filter). claude-code-guide confirmed cache layout + active-version selection + sibling-discovery APIs are ALL undocumented by Anthropic. User call: undocumented-coupling accepted, MVP glue not platform. Skeleton updated: scan scope locked to 3-level walk (../../..) to cache root; per-plugin latest-version pick added (semver-desc, mtime-desc fallback, semver beats hash); pickLatestVersion helper spec'd; Step 0 probe deleted (design locked); walker Step 3/4 + resolver Step 5/6 + SC + Key Considerations + Anti-Patterns all rewritten. Markymark angle-bracket warnings in code blocks are cosmetic, not content bugs.
+- [2026-04-19T21:04:13Z] [Seth] Step 10 smoke tests PASS. Smoke 1 (add): '[lsp-mcp] loaded 13 manifests (builtin: 12, plugin-tree: 1)'. Smoke 2 (override): '[lsp-mcp] manifest "pyright" from plugin-tree (<tmp>/mkt-smoke/fork-plug/1.0.0/lsp-manifest.json) overrides prior builtin (<repo>/manifests/pyright.json).' then 'loaded 12 manifests (builtin: 11, plugin-tree: 1)'. Script at /tmp/lspm-mcp-smoke.sh.

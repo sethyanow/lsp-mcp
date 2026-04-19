@@ -25595,6 +25595,27 @@ var import_fs2 = require("fs");
 var import_path2 = __toESM(require("path"));
 var __dirname = "/Volumes/code/lsp-mcp/src";
 var BUILTIN_DIR = import_path2.default.resolve(__dirname, "../manifests");
+function parseManifestFile(full, sourceKind) {
+  let raw;
+  try {
+    raw = JSON.parse(import_fs2.readFileSync(full, "utf-8"));
+  } catch (err) {
+    process.stderr.write(`[lsp-mcp] failed to parse ${sourceKind} manifest ${full}: ${err.message} — skipping
+`);
+    return null;
+  }
+  const parsed = PluginManifestSchema.safeParse(raw);
+  if (!parsed.success) {
+    process.stderr.write(`[lsp-mcp] ${sourceKind} manifest ${full} failed schema validation — skipping
+`);
+    return null;
+  }
+  return {
+    manifest: parsed.data,
+    sourceKind,
+    sourcePath: full
+  };
+}
 function discoverFromJsonDir(dir, sourceKind) {
   if (!import_fs2.existsSync(dir)) {
     process.stderr.write(`[lsp-mcp] ${sourceKind} source: dir missing at ${dir} — skipping
@@ -25619,25 +25640,9 @@ function discoverFromJsonDir(dir, sourceKind) {
   const out = [];
   for (const name of files) {
     const full = import_path2.default.join(dir, name);
-    let raw;
-    try {
-      raw = JSON.parse(import_fs2.readFileSync(full, "utf-8"));
-    } catch (err) {
-      process.stderr.write(`[lsp-mcp] failed to parse ${sourceKind} manifest ${full}: ${err.message} — skipping
-`);
-      continue;
-    }
-    const parsed = PluginManifestSchema.safeParse(raw);
-    if (!parsed.success) {
-      process.stderr.write(`[lsp-mcp] ${sourceKind} manifest ${full} failed schema validation — skipping
-`);
-      continue;
-    }
-    out.push({
-      manifest: parsed.data,
-      sourceKind,
-      sourcePath: full
-    });
+    const entry = parseManifestFile(full, sourceKind);
+    if (entry)
+      out.push(entry);
   }
   return out;
 }
@@ -25646,6 +25651,128 @@ function discoverBuiltinManifests() {
 }
 function discoverManifestsDir(dir) {
   return discoverFromJsonDir(dir, "manifests-dir");
+}
+var SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)/;
+function parseSemverPrefix(name) {
+  const m = name.match(SEMVER_RE);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+function pickLatestVersion(versions2) {
+  if (versions2.length === 0)
+    return null;
+  const sorted = versions2.slice().sort((a, b) => {
+    const sa = parseSemverPrefix(a.name);
+    const sb = parseSemverPrefix(b.name);
+    if (sa && sb) {
+      for (let i = 0;i < 3; i++) {
+        if (sa[i] !== sb[i])
+          return sb[i] - sa[i];
+      }
+      return a.name.localeCompare(b.name);
+    }
+    if (sa)
+      return -1;
+    if (sb)
+      return 1;
+    if (b.mtimeMs !== a.mtimeMs)
+      return b.mtimeMs - a.mtimeMs;
+    return a.name.localeCompare(b.name);
+  });
+  return sorted[0];
+}
+function discoverPluginTreeManifests(cacheRoot) {
+  if (!import_fs2.existsSync(cacheRoot)) {
+    process.stderr.write(`[lsp-mcp] plugin-tree source: cache root missing at ${cacheRoot} — skipping
+`);
+    return [];
+  }
+  try {
+    if (!import_fs2.statSync(cacheRoot).isDirectory()) {
+      process.stderr.write(`[lsp-mcp] plugin-tree source: cache root ${cacheRoot} is not a directory — skipping
+`);
+      return [];
+    }
+  } catch (err) {
+    process.stderr.write(`[lsp-mcp] plugin-tree: cache root at ${cacheRoot} unreadable: ${err.message} — skipping
+`);
+    return [];
+  }
+  let marketplaces;
+  try {
+    marketplaces = import_fs2.readdirSync(cacheRoot, { withFileTypes: true });
+  } catch (err) {
+    process.stderr.write(`[lsp-mcp] plugin-tree: cache root at ${cacheRoot} unreadable: ${err.message} — skipping
+`);
+    return [];
+  }
+  const out = [];
+  for (const mkt of marketplaces) {
+    if (!mkt.isDirectory())
+      continue;
+    const mktDir = import_path2.default.join(cacheRoot, mkt.name);
+    let plugins;
+    try {
+      plugins = import_fs2.readdirSync(mktDir, { withFileTypes: true });
+    } catch (err) {
+      process.stderr.write(`[lsp-mcp] plugin-tree: marketplace at ${mktDir} unreadable: ${err.message} — skipping
+`);
+      continue;
+    }
+    for (const plug of plugins) {
+      if (!plug.isDirectory())
+        continue;
+      const plugDir = import_path2.default.join(mktDir, plug.name);
+      let versionEnts;
+      try {
+        versionEnts = import_fs2.readdirSync(plugDir, { withFileTypes: true });
+      } catch (err) {
+        process.stderr.write(`[lsp-mcp] plugin-tree: plugin at ${plugDir} unreadable: ${err.message} — skipping
+`);
+        continue;
+      }
+      const versions2 = [];
+      for (const ve of versionEnts) {
+        if (!ve.isDirectory())
+          continue;
+        const full = import_path2.default.join(plugDir, ve.name);
+        try {
+          versions2.push({
+            name: ve.name,
+            fullPath: full,
+            mtimeMs: import_fs2.statSync(full).mtimeMs
+          });
+        } catch {}
+      }
+      const winner = pickLatestVersion(versions2);
+      if (!winner)
+        continue;
+      let contents;
+      try {
+        contents = import_fs2.readdirSync(winner.fullPath, {
+          recursive: true,
+          withFileTypes: true
+        });
+      } catch (err) {
+        process.stderr.write(`[lsp-mcp] plugin-tree: version scan at ${winner.fullPath} unreadable: ${err.message} — skipping
+`);
+        continue;
+      }
+      const manifestPaths = [];
+      for (const f of contents) {
+        if (!f.isFile() || f.name !== "lsp-manifest.json")
+          continue;
+        manifestPaths.push(import_path2.default.join(f.parentPath, f.name));
+      }
+      manifestPaths.sort();
+      for (const full of manifestPaths) {
+        const entry = parseManifestFile(full, "plugin-tree");
+        if (entry)
+          out.push(entry);
+      }
+    }
+  }
+  out.sort((a, b) => (a.sourcePath ?? "").localeCompare(b.sourcePath ?? ""));
+  return out;
 }
 function discoverConfigFileManifests(configPath) {
   if (!import_fs2.existsSync(configPath)) {
@@ -25700,11 +25827,15 @@ function mergeDiscoveryPipeline(sources) {
 function resolveManifestsDirEnv(raw) {
   return raw && raw.length > 0 ? import_path2.default.resolve(raw) : undefined;
 }
+function resolvePluginTreeEnv(raw) {
+  return raw && raw.length > 0 ? import_path2.default.resolve(raw, "../../..") : undefined;
+}
 function discoverManifests(opts) {
   const builtins = discoverBuiltinManifests();
+  const pluginTree = opts.pluginTreeRoot ? discoverPluginTreeManifests(opts.pluginTreeRoot) : [];
   const configFile = discoverConfigFileManifests(opts.configPath);
   const manifestsDir = opts.manifestsDir ? discoverManifestsDir(opts.manifestsDir) : [];
-  return mergeDiscoveryPipeline([builtins, configFile, manifestsDir]);
+  return mergeDiscoveryPipeline([builtins, pluginTree, configFile, manifestsDir]);
 }
 
 // src/index.ts
@@ -25714,7 +25845,8 @@ async function main() {
   const workspaceRoot = import_path3.default.resolve(process.env.LSP_MCP_ROOT ?? process.cwd());
   const pluginsDir = import_path3.default.resolve(process.env.LSP_MCP_PLUGINS_DIR ?? import_path3.default.join(import_path3.default.dirname(configPath), "plugins"));
   const manifestsDir = resolveManifestsDirEnv(process.env.LSP_MCP_MANIFESTS_DIR);
-  const discovered = discoverManifests({ configPath, manifestsDir });
+  const pluginTreeRoot = resolvePluginTreeEnv(process.env.CLAUDE_PLUGIN_ROOT);
+  const discovered = discoverManifests({ configPath, pluginTreeRoot, manifestsDir });
   if (discovered.length === 0) {
     process.stderr.write(`[lsp-mcp] loaded 0 manifests
 `);
@@ -25769,5 +25901,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=F18D69A499F4E28C64756E2164756E21
+//# debugId=16424CB54477243764756E2164756E21
 //# sourceMappingURL=index.js.map

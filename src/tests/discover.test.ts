@@ -1,13 +1,22 @@
 import path from 'path';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import {
+    chmodSync,
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    utimesSync,
+    writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import {
     discoverBuiltinManifests,
     discoverConfigFileManifests,
     discoverManifests,
     discoverManifestsDir,
+    discoverPluginTreeManifests,
     mergeDiscoveryPipeline,
     resolveManifestsDirEnv,
+    resolvePluginTreeEnv,
     type DiscoveredManifest,
 } from '../discover';
 import type { PluginManifest } from '../types';
@@ -57,6 +66,27 @@ describe('resolveManifestsDirEnv', () => {
 
     it('resolves a relative path against cwd', () => {
         expect(resolveManifestsDirEnv('my-dir')).toBe(path.resolve(process.cwd(), 'my-dir'));
+    });
+});
+
+describe('resolvePluginTreeEnv', () => {
+    it('returns undefined for undefined input', () => {
+        expect(resolvePluginTreeEnv(undefined)).toBeUndefined();
+    });
+
+    it('returns undefined for empty string (guards against path.resolve("", "../../..") = cwd grandparent)', () => {
+        expect(resolvePluginTreeEnv('')).toBeUndefined();
+    });
+
+    it('walks an absolute plugin-root path up 3 levels to the cache root', () => {
+        const abs = path.resolve('/foo/cache/mkt/plug/ver');
+        expect(resolvePluginTreeEnv(abs)).toBe(path.resolve('/foo/cache'));
+    });
+
+    it('resolves a relative path against cwd, then walks 3 levels up', () => {
+        expect(resolvePluginTreeEnv('mkt/plug/ver')).toBe(
+            path.resolve(process.cwd(), 'mkt/plug/ver', '../../..')
+        );
     });
 });
 
@@ -326,6 +356,86 @@ describe('discoverManifests', () => {
             expect(starplsIdx).toBeGreaterThanOrEqual(0);
             expect(bazelIdx).toBeLessThan(starplsIdx);
         } finally {
+            rmSync(cfgDir, { recursive: true, force: true });
+            rmSync(mDir, { recursive: true, force: true });
+        }
+    });
+
+    it('four-way merge: builtin < plugin-tree < config-file < manifests-dir, with full chained override log and slot preservation', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-4way-tree-'));
+        const { dir: cfgDir, cfg } = writeConfigFixture([
+            {
+                name: 'pyright',
+                version: '88.88.88',
+                langIds: ['python'],
+                fileGlobs: ['**/*.py'],
+                workspaceMarkers: [],
+                server: { cmd: ['config-pyright'] },
+            },
+        ]);
+        const mDir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-4way-dir-'));
+        try {
+            // Plugin-tree fixture — CC-shaped layout.
+            const treeVersion = path.join(cacheRoot, 'mkt', 'fork', '1.0.0');
+            mkdirSync(treeVersion, { recursive: true });
+            writeFileSync(
+                path.join(treeVersion, 'lsp-manifest.json'),
+                JSON.stringify({
+                    name: 'pyright',
+                    version: '77.77.77',
+                    langIds: ['python'],
+                    fileGlobs: ['**/*.py'],
+                    workspaceMarkers: [],
+                    server: { cmd: ['tree-pyright'] },
+                })
+            );
+
+            writeFileSync(
+                path.join(mDir, 'pyright.json'),
+                JSON.stringify({
+                    name: 'pyright',
+                    version: '99.99.99',
+                    langIds: ['python'],
+                    fileGlobs: ['**/*.py'],
+                    workspaceMarkers: [],
+                    server: { cmd: ['dir-pyright'] },
+                })
+            );
+            writeFileSync(
+                path.join(mDir, 'bazel-lsp.json'),
+                JSON.stringify({
+                    name: 'bazel-lsp',
+                    version: '99.99.99',
+                    langIds: ['starlark'],
+                    fileGlobs: ['**/BUILD', '**/*.bzl'],
+                    workspaceMarkers: ['WORKSPACE'],
+                    server: { cmd: ['dir-bazel'] },
+                })
+            );
+
+            const result = discoverManifests({
+                configPath: cfg,
+                pluginTreeRoot: cacheRoot,
+                manifestsDir: mDir,
+            });
+
+            const pyright = result.find((d) => d.manifest.name === 'pyright');
+            expect(pyright?.sourceKind).toBe('manifests-dir');
+            expect(pyright?.manifest.server.cmd[0]).toBe('dir-pyright');
+
+            const allStderr = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(allStderr).toMatch(/"pyright" from plugin-tree .* overrides prior builtin/);
+            expect(allStderr).toMatch(/"pyright" from config-file .* overrides prior plugin-tree/);
+            expect(allStderr).toMatch(/"pyright" from manifests-dir .* overrides prior config-file/);
+
+            // Slot preservation survives the 4-batch chain.
+            const bazelIdx = result.findIndex((d) => d.manifest.name === 'bazel-lsp');
+            const starplsIdx = result.findIndex((d) => d.manifest.name === 'starpls');
+            expect(bazelIdx).toBeGreaterThanOrEqual(0);
+            expect(starplsIdx).toBeGreaterThanOrEqual(0);
+            expect(bazelIdx).toBeLessThan(starplsIdx);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
             rmSync(cfgDir, { recursive: true, force: true });
             rmSync(mDir, { recursive: true, force: true });
         }
@@ -613,6 +723,404 @@ describe('discoverManifestsDir — adversarial', () => {
             expect(overrides.length).toBe(12);
         } finally {
             rmSync(cfgDir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('discoverPluginTreeManifests', () => {
+    let stderrSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+        stderrSpy.mockRestore();
+    });
+
+    it('returns [] and writes a stderr notice when the cache root is absent', () => {
+        const missing = `/nonexistent-lsp-mcp-r8c-${Date.now()}`;
+
+        const result = discoverPluginTreeManifests(missing);
+
+        expect(result).toEqual([]);
+        const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+        expect(written).toMatch(/plugin-tree.*(skipping|missing)/i);
+    });
+
+    it('walks <cache>/<mkt>/<plug>/<ver>/ layout, picks newest version per plugin, finds lsp-manifest.json at any depth', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-walker-'));
+        try {
+            // plug-a: two semver versions — v2 must win over v1.
+            const pluginAv1 = path.join(cacheRoot, 'mkt-a', 'plug-a', '1.0.0');
+            const pluginAv2 = path.join(cacheRoot, 'mkt-a', 'plug-a', '2.0.0');
+            mkdirSync(pluginAv1, { recursive: true });
+            mkdirSync(pluginAv2, { recursive: true });
+            const v1Manifest = { ...mkManifest('plug-a-v1'), server: { cmd: ['v1'] } };
+            const v2Manifest = { ...mkManifest('plug-a-v2'), server: { cmd: ['v2'] } };
+            writeFileSync(path.join(pluginAv1, 'lsp-manifest.json'), JSON.stringify(v1Manifest));
+            writeFileSync(path.join(pluginAv2, 'lsp-manifest.json'), JSON.stringify(v2Manifest));
+
+            // plug-b: hash version only.
+            const pluginB = path.join(cacheRoot, 'mkt-a', 'plug-b', 'abc123hash');
+            mkdirSync(pluginB, { recursive: true });
+            writeFileSync(
+                path.join(pluginB, 'lsp-manifest.json'),
+                JSON.stringify(mkManifest('plug-b-hash'))
+            );
+
+            // plug-c: manifest nested several dirs deep + decoy wrong-name file.
+            const pluginC = path.join(cacheRoot, 'mkt-b', 'plug-c', '0.1.0');
+            mkdirSync(path.join(pluginC, 'nested', 'deep'), { recursive: true });
+            writeFileSync(
+                path.join(pluginC, 'nested', 'deep', 'lsp-manifest.json'),
+                JSON.stringify(mkManifest('plug-c-deep'))
+            );
+            writeFileSync(
+                path.join(pluginC, 'other.json'),
+                JSON.stringify(mkManifest('decoy'))
+            );
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+            const names = result.map((d) => d.manifest.name);
+
+            expect(result).toHaveLength(3);
+            expect(names).toEqual(expect.arrayContaining(['plug-a-v2', 'plug-b-hash', 'plug-c-deep']));
+            expect(names).not.toContain('plug-a-v1');
+            expect(names).not.toContain('decoy');
+
+            const plugA = result.find((d) => d.manifest.name === 'plug-a-v2');
+            expect(plugA?.manifest.server.cmd).toEqual(['v2']);
+
+            for (const d of result) {
+                expect(d.sourceKind).toBe('plugin-tree');
+                expect(d.sourcePath).toMatch(/lsp-manifest\.json$/);
+            }
+
+            const sorted = [...result].sort((a, b) =>
+                (a.sourcePath ?? '').localeCompare(b.sourcePath ?? '')
+            );
+            expect(result).toEqual(sorted);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('discoverPluginTreeManifests — adversarial (lspm-mcp Step 11)', () => {
+    let stderrSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+        stderrSpy.mockRestore();
+    });
+
+    function writeTreeManifest(fullPath: string, name: string, cmdArg?: string): void {
+        mkdirSync(path.dirname(fullPath), { recursive: true });
+        const body = cmdArg
+            ? { ...mkManifest(name), server: { cmd: [cmdArg] } }
+            : mkManifest(name);
+        writeFileSync(fullPath, JSON.stringify(body));
+    }
+
+    it('empty: cache root exists with zero marketplace subdirs → []', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-empty-'));
+        try {
+            expect(discoverPluginTreeManifests(cacheRoot)).toEqual([]);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('type boundary: cache root is a file, not a directory → stderr "not a directory" + []', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-file-'));
+        const filePath = path.join(dir, 'not-a-dir');
+        writeFileSync(filePath, '');
+        try {
+            const result = discoverPluginTreeManifests(filePath);
+            expect(result).toEqual([]);
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(written).toMatch(/not a directory/i);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('non-dir marketplace entry: stray file at layer 1 is skipped cleanly; other marketplaces still walked', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-stray-'));
+        try {
+            writeFileSync(path.join(cacheRoot, '.DS_Store'), 'noise');
+            writeTreeManifest(
+                path.join(cacheRoot, 'mkt-real', 'plug', '1.0.0', 'lsp-manifest.json'),
+                'real-plug'
+            );
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('real-plug');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('deep nesting: lsp-manifest.json at depth ≥5 inside the winning version dir is still found', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-deep-'));
+        try {
+            const manifestPath = path.join(
+                cacheRoot,
+                'mkt',
+                'plug',
+                '1.0.0',
+                'a',
+                'b',
+                'c',
+                'd',
+                'e',
+                'lsp-manifest.json'
+            );
+            writeTreeManifest(manifestPath, 'deep-plug');
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('deep-plug');
+            expect(result[0].sourcePath).toBe(manifestPath);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('hostile: a subdir literally named "lsp-manifest.json" is filtered by the isFile guard', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-dir-name-'));
+        try {
+            const versionDir = path.join(cacheRoot, 'mkt', 'plug', '1.0.0');
+            mkdirSync(path.join(versionDir, 'lsp-manifest.json'), { recursive: true });
+            writeTreeManifest(
+                path.join(versionDir, 'real', 'lsp-manifest.json'),
+                'real-one'
+            );
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('real-one');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('hostile: invalid JSON in one manifest is soft-skipped; sibling manifests unaffected', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-badjson-'));
+        try {
+            writeTreeManifest(
+                path.join(cacheRoot, 'mkt-a', 'good', '1.0.0', 'lsp-manifest.json'),
+                'good-plug'
+            );
+            const badDir = path.join(cacheRoot, 'mkt-b', 'bad', '1.0.0');
+            mkdirSync(badDir, { recursive: true });
+            writeFileSync(path.join(badDir, 'lsp-manifest.json'), '{not valid json');
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('good-plug');
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(written).toMatch(/failed to parse plugin-tree manifest/);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('hostile: non-matching filenames (plugin-manifest.json, lsp-manifest.txt) are filtered', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-wrongname-'));
+        try {
+            const versionDir = path.join(cacheRoot, 'mkt', 'plug', '1.0.0');
+            mkdirSync(versionDir, { recursive: true });
+            writeFileSync(
+                path.join(versionDir, 'plugin-manifest.json'),
+                JSON.stringify(mkManifest('wrong-1'))
+            );
+            writeFileSync(
+                path.join(versionDir, 'lsp-manifest.txt'),
+                JSON.stringify(mkManifest('wrong-2'))
+            );
+
+            expect(discoverPluginTreeManifests(cacheRoot)).toEqual([]);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('latest-version filter — mixed semver: picks highest numeric across major/minor/patch', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-semver-'));
+        try {
+            const plug = path.join(cacheRoot, 'mkt', 'plug');
+            writeTreeManifest(path.join(plug, '0.9.9', 'lsp-manifest.json'), 'p', 'v099');
+            writeTreeManifest(path.join(plug, '1.0.0', 'lsp-manifest.json'), 'p', 'v100');
+            writeTreeManifest(path.join(plug, '1.0.1', 'lsp-manifest.json'), 'p', 'v101');
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.server.cmd[0]).toBe('v101');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('latest-version filter — mixed semver+hash: semver wins even when hash has newer mtime', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-semver-hash-'));
+        try {
+            const plug = path.join(cacheRoot, 'mkt', 'plug');
+            const semverPath = path.join(plug, '1.0.0');
+            const hashPath = path.join(plug, 'abc123hash');
+            writeTreeManifest(path.join(semverPath, 'lsp-manifest.json'), 'p', 'semver-wins');
+            writeTreeManifest(path.join(hashPath, 'lsp-manifest.json'), 'p', 'hash-loses');
+            // Make hash dir strictly newer than semver dir.
+            const future = new Date(Date.now() + 60_000);
+            utimesSync(hashPath, future, future);
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.server.cmd[0]).toBe('semver-wins');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('latest-version filter — all hash: newer mtime wins', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-hash-mtime-'));
+        try {
+            const plug = path.join(cacheRoot, 'mkt', 'plug');
+            const older = path.join(plug, 'aaaa-older');
+            const newer = path.join(plug, 'bbbb-newer');
+            writeTreeManifest(path.join(older, 'lsp-manifest.json'), 'p', 'older-cmd');
+            writeTreeManifest(path.join(newer, 'lsp-manifest.json'), 'p', 'newer-cmd');
+            const past = new Date(Date.now() - 60_000);
+            utimesSync(older, past, past);
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.server.cmd[0]).toBe('newer-cmd');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('latest-version filter — mtime tie: alphabetically-first name wins (deterministic tie-break)', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-tie-'));
+        try {
+            const plug = path.join(cacheRoot, 'mkt', 'plug');
+            const hashA = path.join(plug, 'aaaa-first');
+            const hashB = path.join(plug, 'bbbb-second');
+            writeTreeManifest(path.join(hashA, 'lsp-manifest.json'), 'p', 'first-cmd');
+            writeTreeManifest(path.join(hashB, 'lsp-manifest.json'), 'p', 'second-cmd');
+            // Pin identical mtimes on both version dirs.
+            const t = new Date(Date.now() - 10_000);
+            utimesSync(hashA, t, t);
+            utimesSync(hashB, t, t);
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.server.cmd[0]).toBe('first-cmd');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('per-layer EACCES: one marketplace unreadable → stderr notice + other marketplaces still discovered', () => {
+        if (process.platform === 'win32' || process.getuid?.() === 0) {
+            // chmod-based EACCES test is POSIX and non-root only.
+            return;
+        }
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-eacces-'));
+        const badMkt = path.join(cacheRoot, 'mkt-bad');
+        try {
+            mkdirSync(badMkt, { recursive: true });
+            // Readable marketplace with a good plugin.
+            writeTreeManifest(
+                path.join(cacheRoot, 'mkt-good', 'plug', '1.0.0', 'lsp-manifest.json'),
+                'good-plug'
+            );
+            // Lock down mkt-bad — readdirSync on it will EACCES.
+            chmodSync(badMkt, 0o000);
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('good-plug');
+            const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+            expect(written).toMatch(/plugin-tree: marketplace .* unreadable/);
+        } finally {
+            // Restore perms so rmSync can clean up.
+            try {
+                chmodSync(badMkt, 0o700);
+            } catch {
+                /* ignore */
+            }
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('plugin dir with zero version subdirs → skipped cleanly, no crash, other plugins unaffected', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-zero-ver-'));
+        try {
+            // Empty plugin dir — no versions inside.
+            mkdirSync(path.join(cacheRoot, 'mkt', 'empty-plug'), { recursive: true });
+            // Good plugin alongside.
+            writeTreeManifest(
+                path.join(cacheRoot, 'mkt', 'good-plug', '1.0.0', 'lsp-manifest.json'),
+                'good-plug'
+            );
+
+            const result = discoverPluginTreeManifests(cacheRoot);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].manifest.name).toBe('good-plug');
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('second-run idempotency: two calls against the same cache root produce deep-equal results', () => {
+        const cacheRoot = mkdtempSync(path.join(tmpdir(), 'lsp-mcp-r8c-idem-'));
+        try {
+            writeTreeManifest(
+                path.join(cacheRoot, 'mkt-a', 'plug-a', '1.0.0', 'lsp-manifest.json'),
+                'a'
+            );
+            writeTreeManifest(
+                path.join(cacheRoot, 'mkt-b', 'plug-b', 'abc', 'lsp-manifest.json'),
+                'b'
+            );
+
+            const run1 = discoverPluginTreeManifests(cacheRoot);
+            const run2 = discoverPluginTreeManifests(cacheRoot);
+
+            expect(run2).toEqual(run1);
+        } finally {
+            rmSync(cacheRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('self-referential: cache root pointed at lsp-mcp repo does not pick up builtin `<name>.json` files', () => {
+        // The repo's manifests/ dir holds <name>.json, not lsp-manifest.json.
+        // Scanning it via plugin-tree must produce zero matches — distinct
+        // filename conventions are the guard.
+        const repoRoot = path.resolve(__dirname, '../..');
+        const result = discoverPluginTreeManifests(repoRoot);
+        expect(result.every((d) => d.sourcePath?.endsWith('lsp-manifest.json'))).toBe(true);
+        // No manifest named after a builtin should slip in from the repo root.
+        const builtinNames = discoverBuiltinManifests().map((d) => d.manifest.name);
+        for (const d of result) {
+            expect(builtinNames).not.toContain(d.manifest.name);
         }
     });
 });
