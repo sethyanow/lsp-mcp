@@ -1,11 +1,13 @@
 ---
 id: lspm-kgj
 title: R8b — LSP_MCP_MANIFESTS_DIR source
-status: active
+status: closed
 type: task
 priority: 1
 parent: lspm-cnq
 ---
+
+
 
 
 
@@ -331,7 +333,7 @@ Do NOT create follow-up task stubs. R8c (`lspm-mcp`) already exists from lspm-h1
 - [x] Second smoke with override fixture shows `"pyright" from manifests-dir ... overrides prior builtin` stderr line
 - [x] `bun run test` green (baseline 127 + 15 new = 142; final count logged to `bn log lspm-kgj`)
 - [x] `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit references `lspm-kgj`, notes latent-bug fixes in built-in loader (stat + permission guards), defers R8c plugin-tree glob. **(pending — Step 10)**
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit references `lspm-kgj`, notes latent-bug fixes in built-in loader (stat + permission guards), defers R8c plugin-tree glob. *(commit a806b0e; pushed)*
 
 ## Anti-Patterns
 
@@ -397,3 +399,4 @@ Do NOT create follow-up task stubs. R8c (`lspm-mcp`) already exists from lspm-h1
 ## Log
 - [2026-04-18T09:51:55Z] [Seth] Scoped via writing-plans (2026-04-18) during lspm-h1n close-out. Single cohesion seam: add 4th pipeline source (LSP_MCP_MANIFESTS_DIR env var → dir-of-JSONs) + extract shared dir-loader helper from existing built-in loader. Codebase-verified starting state: discover.ts 133 lines w/ 6 exports from R8a; index.ts reads 3 env vars (R8b extends to 4); discover.test.ts has 16 tests + reusable fixture helpers. Design picks up R8a's locked dir-absent policy (soft-skip) for manifests-dir, and leverages Map-insertion-order invariant for slot preservation across chained overrides (builtin→config-file→manifests-dir). Incidental latent-bug fix: statSync.isDirectory + permission-denied guards added to shared helper, benefiting built-in loader too. Ready for fresh-session SRE.
 - [2026-04-18T19:27:52Z] [Seth] Step 8 smoke tests GREEN. Smoke 1 (add-only): stderr 'loaded 13 manifests (builtin: 12, manifests-dir: 1)'. Smoke 2 (override): stderr 'manifest "pyright" from manifests-dir (...) overrides prior builtin (...)' + 'loaded 13 manifests (builtin: 11, manifests-dir: 2)' — override shifts pyright out of builtin bucket into manifests-dir (11 non-overridden + 2 from dir = 13). Both grep -q assertions passed.
+- [2026-04-18T19:32:29Z] [Seth] R8b closed. Debrief: resolveManifestsDirEnv extracted as named export for unit-testability (4 dedicated tests instead of smoke-only). No workarounds. Reflections: skeleton high-fidelity; two minor staleness items caught at SRE; statSync scope fix caught at adversarial planning. All 8 adversarial tests GREEN first-run — pre-SRE catalog + SRE finding closed the gaps before the battery ran. 127 → 142 green tests. R8c inherits: sourceKind enum already includes 'plugin-tree'; mergeDiscoveryPipeline handles N batches; discoverFromJsonDir is dir-scan only and won't directly apply to a file-list glob.
