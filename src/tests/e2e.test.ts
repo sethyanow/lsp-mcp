@@ -14,6 +14,7 @@ function entriesFrom(servers: LspServer[]): ManifestEntry[] {
         manifest: s.manifest,
         server: s,
         sourceKind: 'config-file' as const,
+        status: 'ok' as const,
     }));
 }
 

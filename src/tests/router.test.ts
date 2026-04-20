@@ -12,6 +12,7 @@ function entriesFrom(servers: LspServer[]): ManifestEntry[] {
         manifest: s.manifest,
         server: s,
         sourceKind: 'config-file' as const,
+        status: 'ok' as const,
     }));
 }
 
@@ -841,12 +842,122 @@ describe('ManifestEntry.sourceKind threading', () => {
         const tsServer = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsls' });
 
         const entries: ManifestEntry[] = [
-            { manifest: pyServer.manifest, server: pyServer, sourceKind: 'builtin' },
-            { manifest: tsServer.manifest, server: tsServer, sourceKind: 'config-file' },
+            { manifest: pyServer.manifest, server: pyServer, sourceKind: 'builtin', status: 'ok' },
+            { manifest: tsServer.manifest, server: tsServer, sourceKind: 'config-file', status: 'ok' },
         ];
         const router = new Router(entries);
 
         expect(router.entries[0].sourceKind).toBe('builtin');
         expect(router.entries[1].sourceKind).toBe('config-file');
+    });
+});
+
+describe('Router — adversarial: all manifests binary_not_found', () => {
+    it('builds cleanly, _langMap is empty, primaryForLang returns undefined, symbol_search returns []', async () => {
+        const missA = makeMockServer(['python'], ['**/*.py'], { name: 'miss-a' });
+        const missB = makeMockServer(['rust'], ['**/*.rs'], { name: 'miss-b' });
+        missA.workspaceSymbol.mockResolvedValue([]);
+        missB.workspaceSymbol.mockResolvedValue([]);
+
+        const router = new Router([
+            { manifest: missA.manifest, server: missA, sourceKind: 'config-file', status: 'binary_not_found' },
+            { manifest: missB.manifest, server: missB, sourceKind: 'config-file', status: 'binary_not_found' },
+        ]);
+
+        // All entries are enumerable for future list_languages (R6).
+        expect(router.entries.map((e) => e.manifest.name).sort()).toEqual(['miss-a', 'miss-b']);
+        expect(router.entries.every((e) => e.status === 'binary_not_found')).toBe(true);
+
+        // Routing map is empty.
+        expect(router.primaryForLang('python')).toBeUndefined();
+        expect(router.primaryForLang('rust')).toBeUndefined();
+
+        // Default symbol_search fan-out (no explicit manifests) sees no targets.
+        await expect(router.symbolSearch('query')).resolves.toEqual([]);
+        expect(missA.workspaceSymbol).not.toHaveBeenCalled();
+        expect(missB.workspaceSymbol).not.toHaveBeenCalled();
+    });
+});
+
+describe('Router — via routing rejects binary_not_found manifests with informative error', () => {
+    it('throws "Manifest X is binary_not_found — binary not found on PATH" when via targets a missing-binary manifest', async () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'ok-lsp' });
+        const missingServer = makeMockServer(['rust'], ['**/*.rs'], { name: 'missing-lsp' });
+
+        const router = new Router([
+            { manifest: okServer.manifest, server: okServer, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        await expect(
+            router.definitions('file:///src/main.rs', { line: 0, character: 0 }, 'missing-lsp')
+        ).rejects.toThrow(/Manifest "missing-lsp" is binary_not_found.*binary not found on PATH/);
+
+        // Unknown-name path should still surface its distinct message (regression guard).
+        await expect(
+            router.definitions('file:///src/main.rs', { line: 0, character: 0 }, 'no-such-manifest')
+        ).rejects.toThrow(/No manifest named "no-such-manifest"/);
+    });
+});
+
+describe('Router — symbol_search soft-skips binary_not_found manifests', () => {
+    it('skips binary_not_found in explicit-manifests mode, emits stderr notice, does not call LspServer.workspaceSymbol', async () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'ok-lsp' });
+        const missingServer = makeMockServer(['rust'], ['**/*.rs'], { name: 'missing-lsp' });
+        okServer.workspaceSymbol.mockResolvedValue([]);
+        missingServer.workspaceSymbol.mockResolvedValue([]);
+
+        const router = new Router([
+            { manifest: okServer.manifest, server: okServer, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        try {
+            const results = await router.symbolSearch('query', undefined, ['missing-lsp']);
+
+            expect(results).toEqual([]);
+            expect(missingServer.workspaceSymbol).not.toHaveBeenCalled();
+            const messages = stderr.mock.calls.map((c) => String(c[0])).join('');
+            expect(messages).toMatch(/symbol_search.*"missing-lsp".*binary_not_found/i);
+        } finally {
+            stderr.mockRestore();
+        }
+    });
+});
+
+describe('Router — ManifestEntry.status gate', () => {
+    it('keeps binary_not_found entries in entries/entry() but excludes them from routing', () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'ok-lsp' });
+        const missingServer = makeMockServer(['rust'], ['**/*.rs'], { name: 'missing-lsp' });
+
+        const router = new Router([
+            { manifest: okServer.manifest, server: okServer, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        // All manifests remain enumerable — list_languages (R6) depends on this.
+        expect(router.entries).toHaveLength(2);
+        expect(router.entry('ok-lsp')?.status).toBe('ok');
+        expect(router.entry('missing-lsp')?.status).toBe('binary_not_found');
+
+        // Only the ok manifest participates in langId → primary routing.
+        expect(router.primaryForLang('python')?.manifest.name).toBe('ok-lsp');
+        expect(router.primaryForLang('rust')).toBeUndefined();
     });
 });

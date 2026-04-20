@@ -32,6 +32,7 @@
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { LspServer } from './lsp-server.js';
+import { formatMissingBinarySummary, probeAll } from './probe.js';
 import { Router, type ManifestEntry } from './router.js';
 import { createMcpServer } from './mcp-server.js';
 import {
@@ -80,10 +81,17 @@ async function main(): Promise<void> {
         }
     }
 
-    const entries: ManifestEntry[] = discovered.map((d) => ({
-        manifest: d.manifest,
-        server: new LspServer(d.manifest, workspaceRoot, pluginsDir),
-        sourceKind: d.sourceKind,
+    const probed = probeAll(discovered);
+    const missingSummary = formatMissingBinarySummary(probed);
+    if (missingSummary !== undefined) {
+        process.stderr.write(`${missingSummary}\n`);
+    }
+
+    const entries: ManifestEntry[] = probed.map((p) => ({
+        manifest: p.manifest,
+        server: new LspServer(p.manifest, workspaceRoot, pluginsDir),
+        sourceKind: p.sourceKind,
+        status: p.status,
     }));
     const router = new Router(entries);
     const mcpServer = createMcpServer(router);

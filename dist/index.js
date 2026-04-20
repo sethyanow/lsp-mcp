@@ -4005,11 +4005,11 @@ var require_codegen = __commonJS((exports2) => {
       const rhs = this.rhs === undefined ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       if (!names[this.name.str])
         return;
       if (this.rhs)
-        this.rhs = optimizeExpr(this.rhs, names, constants);
+        this.rhs = optimizeExpr(this.rhs, names, constants2);
       return this;
     }
     get names() {
@@ -4027,10 +4027,10 @@ var require_codegen = __commonJS((exports2) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
         return;
-      this.rhs = optimizeExpr(this.rhs, names, constants);
+      this.rhs = optimizeExpr(this.rhs, names, constants2);
       return this;
     }
     get names() {
@@ -4096,8 +4096,8 @@ var require_codegen = __commonJS((exports2) => {
     optimizeNodes() {
       return `${this.code}` ? this : undefined;
     }
-    optimizeNames(names, constants) {
-      this.code = optimizeExpr(this.code, names, constants);
+    optimizeNames(names, constants2) {
+      this.code = optimizeExpr(this.code, names, constants2);
       return this;
     }
     get names() {
@@ -4127,12 +4127,12 @@ var require_codegen = __commonJS((exports2) => {
       }
       return nodes.length > 0 ? this : undefined;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants))
+        if (n.optimizeNames(names, constants2))
           continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
@@ -4189,12 +4189,12 @@ var require_codegen = __commonJS((exports2) => {
         return;
       return this;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       var _a2;
-      this.else = (_a2 = this.else) === null || _a2 === undefined ? undefined : _a2.optimizeNames(names, constants);
-      if (!(super.optimizeNames(names, constants) || this.else))
+      this.else = (_a2 = this.else) === null || _a2 === undefined ? undefined : _a2.optimizeNames(names, constants2);
+      if (!(super.optimizeNames(names, constants2) || this.else))
         return;
-      this.condition = optimizeExpr(this.condition, names, constants);
+      this.condition = optimizeExpr(this.condition, names, constants2);
       return this;
     }
     get names() {
@@ -4219,10 +4219,10 @@ var require_codegen = __commonJS((exports2) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants) {
-      if (!super.optimizeNames(names, constants))
+    optimizeNames(names, constants2) {
+      if (!super.optimizeNames(names, constants2))
         return;
-      this.iteration = optimizeExpr(this.iteration, names, constants);
+      this.iteration = optimizeExpr(this.iteration, names, constants2);
       return this;
     }
     get names() {
@@ -4260,10 +4260,10 @@ var require_codegen = __commonJS((exports2) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants) {
-      if (!super.optimizeNames(names, constants))
+    optimizeNames(names, constants2) {
+      if (!super.optimizeNames(names, constants2))
         return;
-      this.iterable = optimizeExpr(this.iterable, names, constants);
+      this.iterable = optimizeExpr(this.iterable, names, constants2);
       return this;
     }
     get names() {
@@ -4308,11 +4308,11 @@ var require_codegen = __commonJS((exports2) => {
       (_b = this.finally) === null || _b === undefined || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       var _a2, _b;
-      super.optimizeNames(names, constants);
-      (_a2 = this.catch) === null || _a2 === undefined || _a2.optimizeNames(names, constants);
-      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants);
+      super.optimizeNames(names, constants2);
+      (_a2 = this.catch) === null || _a2 === undefined || _a2.optimizeNames(names, constants2);
+      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants2);
       return this;
     }
     get names() {
@@ -4586,7 +4586,7 @@ var require_codegen = __commonJS((exports2) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants) {
+  function optimizeExpr(expr, names, constants2) {
     if (expr instanceof code_1.Name)
       return replaceName(expr);
     if (!canOptimize(expr))
@@ -4601,14 +4601,14 @@ var require_codegen = __commonJS((exports2) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants[n.str];
+      const c = constants2[n.str];
       if (c === undefined || names[n.str] !== 1)
         return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== undefined);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== undefined);
     }
   }
   function subtractNames(names, from) {
@@ -6751,8 +6751,8 @@ var require_utils = __commonJS((exports2, module2) => {
     }
     return ind;
   }
-  function removeDotSegments(path3) {
-    let input = path3;
+  function removeDotSegments(path4) {
+    let input = path4;
     const output = [];
     let nextSlash = -1;
     let len = 0;
@@ -6942,8 +6942,8 @@ var require_schemes = __commonJS((exports2, module2) => {
       wsComponent.secure = undefined;
     }
     if (wsComponent.resourceName) {
-      const [path3, query] = wsComponent.resourceName.split("?");
-      wsComponent.path = path3 && path3 !== "/" ? path3 : undefined;
+      const [path4, query] = wsComponent.resourceName.split("?");
+      wsComponent.path = path4 && path4 !== "/" ? path4 : undefined;
       wsComponent.query = query;
       wsComponent.resourceName = undefined;
     }
@@ -21501,6 +21501,60 @@ function findRoot(startDir, markers) {
   }
 }
 
+// src/probe.ts
+var import_fs2 = require("fs");
+var path3 = __toESM(require("path"));
+function probeBinaryOnPath(cmd) {
+  if (!cmd)
+    return "binary_not_found";
+  if (path3.isAbsolute(cmd)) {
+    return checkExecutableFile(cmd);
+  }
+  const pathEntries = (process.env.PATH ?? "").split(path3.delimiter).filter((segment) => segment.length > 0);
+  const extensions = getPathExtensions();
+  for (const dir of pathEntries) {
+    for (const ext2 of extensions) {
+      const candidate = path3.join(dir, cmd + ext2);
+      if (checkExecutableFile(candidate) === "ok")
+        return "ok";
+    }
+  }
+  return "binary_not_found";
+}
+function checkExecutableFile(p) {
+  try {
+    import_fs2.accessSync(p, import_fs2.constants.X_OK);
+  } catch {
+    return "binary_not_found";
+  }
+  try {
+    if (!import_fs2.statSync(p).isFile())
+      return "binary_not_found";
+  } catch {
+    return "binary_not_found";
+  }
+  return "ok";
+}
+function getPathExtensions() {
+  if (process.platform !== "win32")
+    return [""];
+  const raw = process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM";
+  return raw.split(";").filter((ext2) => ext2.length > 0);
+}
+function probeAll(discovered) {
+  return discovered.map((d) => ({
+    ...d,
+    status: probeBinaryOnPath(d.manifest.server.cmd[0])
+  }));
+}
+function formatMissingBinarySummary(probed) {
+  const missing = probed.filter((p) => p.status === "binary_not_found").map((p) => p.manifest.name).sort();
+  if (missing.length === 0)
+    return;
+  const verb = missing.length === 1 ? "manifest has" : "manifests have";
+  return `[lsp-mcp] ${missing.length} ${verb} binary_not_found: ${missing.join(", ")}`;
+}
+
 // src/router.ts
 var import_url2 = require("url");
 
@@ -21666,6 +21720,8 @@ class Router {
   static _buildLangMap(entries) {
     const map = new Map;
     for (const entry of entries) {
+      if (entry.status !== "ok")
+        continue;
       for (const langId of entry.manifest.langIds) {
         const slot = map.get(langId);
         if (slot) {
@@ -21711,6 +21767,9 @@ class Router {
     if (!entry) {
       throw new Error(`No manifest named "${name}"`);
     }
+    if (entry.status !== "ok") {
+      throw new Error(`Manifest "${name}" is ${entry.status} — binary not found on PATH`);
+    }
     return entry;
   }
   async _openWithPause(server, fileUri) {
@@ -21733,6 +21792,11 @@ class Router {
         const entry = this._byName.get(name);
         if (!entry) {
           process.stderr.write(`[lsp-mcp] symbol_search: no manifest named "${name}"
+`);
+          continue;
+        }
+        if (entry.status !== "ok") {
+          process.stderr.write(`[lsp-mcp] symbol_search: "${name}" is ${entry.status} — skipping
 `);
           continue;
         }
@@ -25591,14 +25655,14 @@ function symbolKindName(kind) {
 }
 
 // src/discover.ts
-var import_fs2 = require("fs");
+var import_fs3 = require("fs");
 var import_path2 = __toESM(require("path"));
 var __dirname = "/Volumes/code/lsp-mcp/src";
 var BUILTIN_DIR = import_path2.default.resolve(__dirname, "../manifests");
 function parseManifestFile(full, sourceKind) {
   let raw;
   try {
-    raw = JSON.parse(import_fs2.readFileSync(full, "utf-8"));
+    raw = JSON.parse(import_fs3.readFileSync(full, "utf-8"));
   } catch (err) {
     process.stderr.write(`[lsp-mcp] failed to parse ${sourceKind} manifest ${full}: ${err.message} — skipping
 `);
@@ -25617,20 +25681,20 @@ function parseManifestFile(full, sourceKind) {
   };
 }
 function discoverFromJsonDir(dir, sourceKind) {
-  if (!import_fs2.existsSync(dir)) {
+  if (!import_fs3.existsSync(dir)) {
     process.stderr.write(`[lsp-mcp] ${sourceKind} source: dir missing at ${dir} — skipping
 `);
     return [];
   }
   let entries;
   try {
-    const st = import_fs2.statSync(dir);
+    const st = import_fs3.statSync(dir);
     if (!st.isDirectory()) {
       process.stderr.write(`[lsp-mcp] ${sourceKind} source: path ${dir} is not a directory — skipping
 `);
       return [];
     }
-    entries = import_fs2.readdirSync(dir, { withFileTypes: true });
+    entries = import_fs3.readdirSync(dir, { withFileTypes: true });
   } catch (err) {
     process.stderr.write(`[lsp-mcp] ${sourceKind} source: could not read ${dir}: ${err.message} — skipping
 `);
@@ -25681,13 +25745,13 @@ function pickLatestVersion(versions2) {
   return sorted[0];
 }
 function discoverPluginTreeManifests(cacheRoot) {
-  if (!import_fs2.existsSync(cacheRoot)) {
+  if (!import_fs3.existsSync(cacheRoot)) {
     process.stderr.write(`[lsp-mcp] plugin-tree source: cache root missing at ${cacheRoot} — skipping
 `);
     return [];
   }
   try {
-    if (!import_fs2.statSync(cacheRoot).isDirectory()) {
+    if (!import_fs3.statSync(cacheRoot).isDirectory()) {
       process.stderr.write(`[lsp-mcp] plugin-tree source: cache root ${cacheRoot} is not a directory — skipping
 `);
       return [];
@@ -25699,7 +25763,7 @@ function discoverPluginTreeManifests(cacheRoot) {
   }
   let marketplaces;
   try {
-    marketplaces = import_fs2.readdirSync(cacheRoot, { withFileTypes: true });
+    marketplaces = import_fs3.readdirSync(cacheRoot, { withFileTypes: true });
   } catch (err) {
     process.stderr.write(`[lsp-mcp] plugin-tree: cache root at ${cacheRoot} unreadable: ${err.message} — skipping
 `);
@@ -25712,7 +25776,7 @@ function discoverPluginTreeManifests(cacheRoot) {
     const mktDir = import_path2.default.join(cacheRoot, mkt.name);
     let plugins;
     try {
-      plugins = import_fs2.readdirSync(mktDir, { withFileTypes: true });
+      plugins = import_fs3.readdirSync(mktDir, { withFileTypes: true });
     } catch (err) {
       process.stderr.write(`[lsp-mcp] plugin-tree: marketplace at ${mktDir} unreadable: ${err.message} — skipping
 `);
@@ -25724,7 +25788,7 @@ function discoverPluginTreeManifests(cacheRoot) {
       const plugDir = import_path2.default.join(mktDir, plug.name);
       let versionEnts;
       try {
-        versionEnts = import_fs2.readdirSync(plugDir, { withFileTypes: true });
+        versionEnts = import_fs3.readdirSync(plugDir, { withFileTypes: true });
       } catch (err) {
         process.stderr.write(`[lsp-mcp] plugin-tree: plugin at ${plugDir} unreadable: ${err.message} — skipping
 `);
@@ -25739,7 +25803,7 @@ function discoverPluginTreeManifests(cacheRoot) {
           versions2.push({
             name: ve.name,
             fullPath: full,
-            mtimeMs: import_fs2.statSync(full).mtimeMs
+            mtimeMs: import_fs3.statSync(full).mtimeMs
           });
         } catch {}
       }
@@ -25748,7 +25812,7 @@ function discoverPluginTreeManifests(cacheRoot) {
         continue;
       let contents;
       try {
-        contents = import_fs2.readdirSync(winner.fullPath, {
+        contents = import_fs3.readdirSync(winner.fullPath, {
           recursive: true,
           withFileTypes: true
         });
@@ -25775,14 +25839,14 @@ function discoverPluginTreeManifests(cacheRoot) {
   return out;
 }
 function discoverConfigFileManifests(configPath) {
-  if (!import_fs2.existsSync(configPath)) {
+  if (!import_fs3.existsSync(configPath)) {
     process.stderr.write(`lsp-mcp: no config file at ${configPath}; starting with zero config-file manifests. ` + `Set LSP_MCP_CONFIG to provide plugins.
 `);
     return [];
   }
   let raw;
   try {
-    raw = JSON.parse(import_fs2.readFileSync(configPath, "utf-8"));
+    raw = JSON.parse(import_fs3.readFileSync(configPath, "utf-8"));
   } catch (err) {
     process.stderr.write(`lsp-mcp: failed to parse config: ${err.message}
 `);
@@ -25864,10 +25928,17 @@ async function main() {
 `);
     }
   }
-  const entries = discovered.map((d) => ({
-    manifest: d.manifest,
-    server: new LspServer(d.manifest, workspaceRoot, pluginsDir),
-    sourceKind: d.sourceKind
+  const probed = probeAll(discovered);
+  const missingSummary = formatMissingBinarySummary(probed);
+  if (missingSummary !== undefined) {
+    process.stderr.write(`${missingSummary}
+`);
+  }
+  const entries = probed.map((p) => ({
+    manifest: p.manifest,
+    server: new LspServer(p.manifest, workspaceRoot, pluginsDir),
+    sourceKind: p.sourceKind,
+    status: p.status
   }));
   const router = new Router(entries);
   const mcpServer = createMcpServer(router);
@@ -25901,5 +25972,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=16424CB54477243764756E2164756E21
+//# debugId=1CF1014858A4DF2764756E2164756E21
 //# sourceMappingURL=index.js.map

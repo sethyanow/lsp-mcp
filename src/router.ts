@@ -1,17 +1,24 @@
 import { fileURLToPath } from 'url';
 import type { LspServer } from './lsp-server.js';
 import type { SourceKind } from './discover.js';
+import type { ProbeStatus } from './probe.js';
 import type { DiagnosticInfo, Location, PluginManifest, SymbolInfo } from './types.js';
 
 /**
  * A registered manifest paired with its backing LSP server. The Router's
  * public surface exposes these; LspServer instances are only reachable
  * through the entry they belong to.
+ *
+ * `status` reflects the PATH probe result at router construction time:
+ * `'ok'` manifests contribute to routing; `'binary_not_found'` manifests
+ * stay in `entries` / `entry(name)` for enumeration (e.g. `list_languages`)
+ * but are excluded from the langId → primary map.
  */
 export interface ManifestEntry {
     manifest: PluginManifest;
     server: LspServer;
     sourceKind: SourceKind;
+    status: ProbeStatus;
 }
 
 /**
@@ -331,6 +338,7 @@ export class Router {
     ): Map<string, { candidates: ManifestEntry[]; primary: string }> {
         const map = new Map<string, { candidates: ManifestEntry[]; primary: string }>();
         for (const entry of entries) {
+            if (entry.status !== 'ok') continue;
             for (const langId of entry.manifest.langIds) {
                 const slot = map.get(langId);
                 if (slot) {
@@ -387,6 +395,11 @@ export class Router {
         if (!entry) {
             throw new Error(`No manifest named "${name}"`);
         }
+        if (entry.status !== 'ok') {
+            throw new Error(
+                `Manifest "${name}" is ${entry.status} — binary not found on PATH`
+            );
+        }
         return entry;
     }
 
@@ -429,6 +442,12 @@ export class Router {
                 if (!entry) {
                     process.stderr.write(
                         `[lsp-mcp] symbol_search: no manifest named "${name}"\n`
+                    );
+                    continue;
+                }
+                if (entry.status !== 'ok') {
+                    process.stderr.write(
+                        `[lsp-mcp] symbol_search: "${name}" is ${entry.status} — skipping\n`
                     );
                     continue;
                 }

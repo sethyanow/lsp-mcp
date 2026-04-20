@@ -1,11 +1,17 @@
 ---
 id: lspm-hlm
 title: R5 — PATH probe at startup; status field on ManifestEntry
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
+
+
+
 
 ## Context
 
@@ -50,12 +56,15 @@ export function probeBinaryOnPath(cmd: string): ProbeStatus;
 ```
 
 Implementation sketch:
-- `path.isAbsolute(cmd)` → `accessSync(cmd, constants.X_OK)` with try/catch; ok on success, binary_not_found on throw.
+- **Entry guard:** `if (!cmd) return 'binary_not_found';` — prevents empty-string fallthrough into bare-name branch.
+- `path.isAbsolute(cmd)` → `accessSync(cmd, constants.X_OK)` with try/catch; on success, verify `statSync(cmd).isFile()` (see "File-not-directory gate" below). `ok` if both pass, `binary_not_found` on any throw or non-file.
 - Bare name:
-  - Split `process.env.PATH ?? ''` on `path.delimiter`.
+  - Split `process.env.PATH ?? ''` on `path.delimiter`. Filter empty segments.
   - Windows: split `process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM'` on `';'`. POSIX: extensions = `['']`.
-  - For each (dir, ext), `accessSync(path.join(dir, cmd + ext), constants.X_OK)`; first success → `'ok'`.
+  - For each (dir, ext), `accessSync(path.join(dir, cmd + ext), constants.X_OK)` + `statSync(...).isFile()`; first combined success → `'ok'`.
   - Exhaust all candidates → `'binary_not_found'`.
+
+**File-not-directory gate.** On POSIX, `accessSync(path, X_OK)` returns true for directories (the X bit on a dir means "traversable"). On Windows, Node maps `X_OK` to `R_OK`, which any readable directory satisfies. Without a `statSync(path).isFile()` check, `probeBinaryOnPath('/tmp')` returns `'ok'` — wrong. The gate is a second syscall per probe; acceptable cost. Wrap `statSync` in its own try/catch so race-condition unlinks between `accessSync` and `statSync` report as `binary_not_found`.
 
 **Anti-pattern to avoid:** spawning the binary (e.g., `spawnSync(cmd, ['--version'])`). Some LSPs don't support `--version` or hang; pure filesystem probe is cheaper and has no correctness risk.
 
@@ -123,10 +132,18 @@ Observability — extend the existing "loaded N manifests" line with a missing-b
 
 ```
 [lsp-mcp] loaded 13 manifests (builtin: 12, plugin-tree: 1)
-[lsp-mcp] 3 manifests have binary_not_found: typescript-language-server, rust-analyzer, clangd
+[lsp-mcp] 3 manifests have binary_not_found: clangd, rust-analyzer, typescript-language-server
 ```
 
 The second line only emits when ≥1 manifest is `binary_not_found`. Ordering: alphabetical by manifest name for determinism.
+
+**Singular vs plural.** When exactly one manifest is missing, use the singular form:
+
+```
+[lsp-mcp] 1 manifest has binary_not_found: rust-analyzer
+```
+
+Agree the exact pluralization in the implementation: `count === 1 ? 'manifest has' : 'manifests have'`. Adversarial tests must cover both the singular and plural forms.
 
 ### Test helper update
 
@@ -279,7 +296,7 @@ In `probe.ts`: `probeAll(discovered)` maps each `d` → `{...d, status: probeBin
 
 In `index.ts`: replace the inline `.map` that constructs `ManifestEntry` with:
 1. `const probed = probeAll(discovered);`
-2. Observability — after the existing "loaded N manifests" line, compute missing names from `probed.filter(p => p.status === 'binary_not_found')`. If non-empty, emit the summary line with alphabetically-sorted manifest names.
+2. Observability — after the existing "loaded N manifests" line, compute missing names from `probed.filter(p => p.status === 'binary_not_found')`. If non-empty, emit the summary line with alphabetically-sorted manifest names. Pluralize: `count === 1 ? 'manifest has' : 'manifests have'`.
 3. `const entries = probed.map(p => ({manifest: p.manifest, server: new LspServer(...), sourceKind: p.sourceKind, status: p.status}))`.
 
 Run → Step 11 passes + all prior tests still green.
@@ -304,11 +321,14 @@ Record stderr in `bn log lspm-hlm`.
 Adversarial patterns:
 - **Empty PATH**: `process.env.PATH = ''`; `probeBinaryOnPath('anything')` → `'binary_not_found'`.
 - **PATH with trailing delimiter**: `'/usr/bin:'` (POSIX) / `'C:\\Windows;'` (Win) — empty segment filtered, no crash.
-- **Absolute path that's a directory**: `probeBinaryOnPath('/tmp')` → `'binary_not_found'` (dir is not executable file).
+- **Absolute path that's a directory**: `probeBinaryOnPath('/tmp')` → `'binary_not_found'`. Fails without the `statSync.isFile()` gate because `X_OK` on POSIX directories and the `R_OK`-aliased `X_OK` on Windows both return true for dirs.
 - **Absolute path that's a non-executable file**: `writeFileSync(..., { mode: 0o644 })` → `'binary_not_found'` on POSIX (accessSync X_OK fails); behavior on Windows may differ (R_OK=X_OK) — guard or document.
-- **Command with embedded path separator** (e.g., `./rel/path`): `path.isAbsolute` returns false, but the command isn't a bare name either. Document behavior — likely treated as bare name and PATH-lookup'd, which fails. Acceptable.
+- **Empty string cmd**: `probeBinaryOnPath('')` → `'binary_not_found'`. Entry guard short-circuits before branching.
+- **Bare-name hit that is a directory**: construct a fixture dir, create a subdir `fake-lsp/` (not a file) inside, prepend the fixture dir to `PATH`, probe `fake-lsp` → `'binary_not_found'`. Validates the `statSync.isFile()` gate in the PATH-walk branch.
+- **Command with embedded path separator** (e.g., `./rel/path`): `path.isAbsolute` returns false, but the command isn't a bare name either. Lock in behavior with a test: `probeBinaryOnPath('./nonexistent-relative-path')` returns `'binary_not_found'`. Documented: the probe does not resolve relative to CWD or workspace; relative paths go through PATH-lookup and miss. Acceptable.
 - **Router with all manifests binary_not_found**: `_langMap` empty; `primaryForLang('python')` returns undefined; `symbol_search` returns `[]`; no crash.
 - **Router with status change between builds**: verify that constructing a new Router with updated statuses produces a new `_langMap`. (Not a state change within one Router instance — R7 `set_primary` handles that; R5 is construct-only.)
+- **Observability pluralization**: index.ts emission with `count === 1` → `"1 manifest has binary_not_found:"`; `count > 1` → `"N manifests have binary_not_found:"`. Test both branches with injected probed-lists.
 
 Each adversarial: RED → verify expected failure → GREEN → Three-Question Framework per stress-test skill.
 
@@ -340,23 +360,23 @@ Commit body enumerates: new `src/probe.ts`, `ProbeStatus` type, `probeBinaryOnPa
 
 ## Success Criteria
 
-- [ ] `src/probe.ts` exists; exports `ProbeStatus` type (`'ok' | 'binary_not_found'`) and `probeBinaryOnPath(cmd: string): ProbeStatus`
-- [ ] `probeBinaryOnPath` handles: absolute paths (accessSync X_OK), bare names via PATH walk, Windows PATHEXT (`.EXE .CMD .BAT .COM` defaults), empty `PATH` env var (returns `binary_not_found`)
-- [ ] No process spawn in probe — pure filesystem check
-- [ ] `src/probe.ts` exports `probeAll(discovered: DiscoveredManifest[]): Array<DiscoveredManifest & { status: ProbeStatus }>`
-- [ ] `ManifestEntry` interface in `src/router.ts` has `status: ProbeStatus` field; all callers (index.ts, router.test.ts, mcp-server.test.ts, e2e.test.ts) updated
-- [ ] `Router._buildLangMap` filters `status !== 'ok'` entries — they don't contribute to routing
-- [ ] `Router.entries` and `Router.entry(name)` still return/include `binary_not_found` entries (for future `list_languages`)
-- [ ] `Router._requireByName` throws distinct error when resolved entry has `status !== 'ok'` — message contains the status value
-- [ ] `Router._selectSymbolSearchTargets` in explicit-`manifests` mode skips `binary_not_found` with stderr notice
-- [ ] `src/index.ts` probes each discovered manifest's `cmd[0]` before constructing `ManifestEntry[]`
-- [ ] Observability line: when ≥1 manifest is `binary_not_found`, stderr emits `[lsp-mcp] N manifests have binary_not_found: <alphabetical-names>` (sorted)
-- [ ] Test-fixture helpers (`entriesFrom` in router.test.ts + equivalents in mcp-server.test.ts, e2e.test.ts) updated with `status: 'ok' as const`
-- [ ] 164 baseline tests stay green; new probe unit tests + router integration tests + adversarial cases land (~12 new, target ~176 total)
-- [ ] Adversarial battery covers: empty PATH, PATH with trailing/empty delimiter segment, absolute dir (not file), non-executable absolute file (POSIX), all-manifests-binary_not_found router, bare-name PATH miss
-- [ ] Smoke test records real-box probe output (how many of the 12 built-ins are `ok` vs `binary_not_found`) in `bn log lspm-hlm`
-- [ ] `bun run test` green; `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
-- [ ] Sub-epic `lspm-cnq` SC "PATH probe at startup ..." flipped `[ ]` → `[x]`
+- [x] `src/probe.ts` exists; exports `ProbeStatus` type (`'ok' | 'binary_not_found'`) and `probeBinaryOnPath(cmd: string): ProbeStatus`
+- [x] `probeBinaryOnPath` handles: empty `cmd` string (entry guard → `binary_not_found`), absolute paths (accessSync X_OK + `statSync.isFile()` gate), bare names via PATH walk (with same isFile gate), Windows PATHEXT (`.EXE .CMD .BAT .COM` defaults), empty `PATH` env var (returns `binary_not_found`)
+- [x] No process spawn in probe — pure filesystem check
+- [x] `src/probe.ts` exports `probeAll(discovered: DiscoveredManifest[]): Array<DiscoveredManifest & { status: ProbeStatus }>`
+- [x] `ManifestEntry` interface in `src/router.ts` has `status: ProbeStatus` field; all callers (index.ts, router.test.ts, mcp-server.test.ts, e2e.test.ts) updated
+- [x] `Router._buildLangMap` filters `status !== 'ok'` entries — they don't contribute to routing
+- [x] `Router.entries` and `Router.entry(name)` still return/include `binary_not_found` entries (for future `list_languages`)
+- [x] `Router._requireByName` throws distinct error when resolved entry has `status !== 'ok'` — message contains the status value
+- [x] `Router._selectSymbolSearchTargets` in explicit-`manifests` mode skips `binary_not_found` with stderr notice
+- [x] `src/index.ts` probes each discovered manifest's `cmd[0]` before constructing `ManifestEntry[]`
+- [x] Observability line: when ≥1 manifest is `binary_not_found`, stderr emits `[lsp-mcp] N manifests have binary_not_found: <alphabetical-names>` (sorted); singular form `1 manifest has binary_not_found:` when `count === 1`
+- [x] Test-fixture helpers (`entriesFrom` in router.test.ts + equivalents in mcp-server.test.ts, e2e.test.ts) updated with `status: 'ok' as const`
+- [x] 164 baseline tests stay green; new probe unit tests + router integration tests + adversarial cases land (~16 new, target ~180 total)
+- [x] Adversarial battery covers: empty PATH, PATH with trailing/empty delimiter segment, absolute dir (not file) — asserts `statSync.isFile()` gate works, non-executable absolute file (POSIX), all-manifests-binary_not_found router, bare-name PATH miss, relative-path `cmd[0]` (`./rel/path` → `binary_not_found`), observability pluralization (singular + plural), empty-string cmd (entry guard), bare-name PATH hit pointing at a same-named subdirectory (`statSync.isFile()` gate applies in PATH-walk branch too)
+- [x] Smoke test records real-box probe output (how many of the 12 built-ins are `ok` vs `binary_not_found`) in `bn log lspm-hlm`
+- [x] `bun run test` green; `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
+- [x] Sub-epic `lspm-cnq` SC "PATH probe at startup ..." flipped `[ ]` → `[x]`
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R5 complete, R6/R7/R7b still open
 
 ## Anti-Patterns
@@ -383,8 +403,31 @@ Commit body enumerates: new `src/probe.ts`, `ProbeStatus` type, `probeBinaryOnPa
 - **Env PATH mutation during tests.** Tests that modify `process.env.PATH` MUST restore in `finally`; cross-test PATH pollution breaks unrelated tests. Use the pattern from Step 3.
 - **Stderr spy in probe tests.** probe.test.ts doesn't need a stderr spy (the probe itself doesn't write stderr; index.ts does). Router tests that check via-missing error messages DO need stderr spies.
 
+### Failure Catalog (adversarial planning)
+
+**State Corruption: `probeBinaryOnPath` — directory passes X_OK**
+- Assumption: `accessSync(path, X_OK)` succeeding implies `path` is an executable file.
+- Betrayal: POSIX `X_OK` on a directory tests the traversal bit and returns true for any readable directory. Node on Windows maps `X_OK` to `R_OK`, which all readable directories satisfy.
+- Consequence: `probeBinaryOnPath('/usr/local/bin')` returns `'ok'`. The bare-name branch hits the same issue when a PATH entry contains a same-named subdirectory (e.g., `/usr/local/bin/pyright/` as a dir). Router registers the entry as routable; spawn fails at request time with EACCES or similar; user sees runtime error instead of startup status.
+- Mitigation: after `accessSync` success in both branches, gate on `statSync(path).isFile()`. Wrap `statSync` in its own try/catch so an unlink race between `accessSync` and `statSync` reports `'binary_not_found'`. Design section updated accordingly.
+
+**Input Hostility: `probeBinaryOnPath` — empty string cmd**
+- Assumption: `cmd` is a non-empty string (schema validates manifest `cmd: []` as at least one element).
+- Betrayal: if schema changes or a caller dereferences `cmd[0]` when `cmd` is `[]`, the probe receives `''` or `undefined`. `path.isAbsolute('')` is `false` → bare-name branch → `path.join('/usr/bin', '')` = `/usr/bin` → directory → combined with the X_OK-on-dir bug above, returns `'ok'`.
+- Consequence: empty cmd silently registers as a routable manifest.
+- Mitigation: entry guard `if (!cmd) return 'binary_not_found';` at the top of `probeBinaryOnPath`. Even with the file-not-dir fix in place, the guard makes the intent explicit and avoids a full PATH walk for a garbage input. Adversarial test: `probeBinaryOnPath('')` returns `'binary_not_found'`.
+
 ## Dependencies
 
 - **Blocks:** `lspm-cnq` (parent sub-epic; R5 closes the "PATH probe" SC bullet)
 - **Blocked by:** none — `lspm-mcp` (R8c) is closed; no other open deps
 - **Unlocks:** R6 `list_languages` (needs status field to surface), R7 `set_primary` (needs ok-vs-missing distinction), R7b dynamic schemas (needs active-manifest enumeration)
+
+## Log
+
+- [2026-04-19T23:51:41Z] [Seth] SRE fresh-session review complete. Skeleton claims verified against codebase (router.ts=485 LOC, index.ts=118 LOC, router.test.ts=852 LOC, 164 baseline green across 6 suites, no 'which' dep, mcp-server/lsp-server free of ManifestEntry refs, entriesFrom helpers at router.test.ts:10, mcp-server.test.ts:11, e2e.test.ts:12, index.ts:83 inline entry construction, LspServer.shutdown null-safe via _connection guard, DiscoveredManifest at discover.ts:9-13 with optional sourcePath). Added to skeleton: (1) singular/plural handling for observability stderr line (1 manifest has vs N manifests have); (2) explicit adversarial test locking relative-path cmd[0] behavior (./rel/path -> binary_not_found, not CWD-resolved); (3) updated SC test-count estimate 12->14 and adversarial coverage bullet to include relative-path and pluralization cases. No design changes — skeleton's probe approach (fs.accessSync + PATHEXT, no spawn, no which dep) is sound.
+- [2026-04-19T23:55:16Z] [Seth] Adversarial planning complete. Two failure-catalog findings added to Key Considerations: (1) HIGH — absolute-path X_OK passes for directories on both POSIX (traversal bit) and Windows (R_OK alias); skeleton's Step 14 asserts probeBinaryOnPath('/tmp') -> binary_not_found but Design sketch wouldn't implement that behavior. Mitigation: statSync(path).isFile() gate after accessSync in BOTH branches, wrapped in own try/catch for unlink-race safety. (2) MEDIUM — empty-string cmd passes through to bare-name branch, joins '' with each PATH dir producing directory paths, combined with #1 returns 'ok'. Mitigation: entry guard 'if (!cmd) return binary_not_found'. Design section updated; SCs updated to require isFile gate + entry guard; Step 14 adversarial extended with empty-string + bare-name-dir-hit cases; total-test estimate bumped 14->16 new.
+- [2026-04-20T00:07:50Z] [Seth] Smoke test on real dev box (macOS/darwin):
+Smoke 1 (stock, LSP_MCP_CONFIG=/nonexistent): '[lsp-mcp] loaded 12 manifests (builtin: 12)' followed by '[lsp-mcp] 5 manifests have binary_not_found: bash-language-server, bazel-lsp, elixir-ls, lua-language-server, starpls' — 7 of 12 builtins resolve on PATH (pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, svelte-language-server). Plural form correct (count=5). Alphabetical order correct (b, b, e, l, s).
+Smoke 2 (array-top-level config file with cmd=node): '[lsp-mcp] loaded 13 manifests (builtin: 12, config-file: 1)' same 5-missing list — 'smoke-node' is NOT listed, confirming 'node' probed as ok. layered-discovery count mixing works.
+Config-file schema note: top-level must be JSON array, not {plugins: [...]}.
