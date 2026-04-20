@@ -1,12 +1,13 @@
 ---
 id: lspm-zw9
 title: R7 — set_primary MCP tool
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
 
 
 
@@ -278,7 +279,7 @@ Stage `src/router.ts`, `src/mcp-server.ts`, `src/tests/router.test.ts`, `src/tes
 - [x] Smoke: `node scripts/smoke-mcp-tool.mjs set_primary '{"lang":"...","manifest":"..."}'` on the dev box returns expected payload; error-path smoke returns `isError` with informative text; both recorded in `bn log lspm-zw9`
 - [x] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
 - [x] Sub-epic `lspm-cnq` SC "`set_primary(lang, manifest)` MCP tool swaps primary in-memory without restart." flipped `[ ]` → `[x]`
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R7 complete; R7b, R9 still open
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit notes R7 complete; R7b, R9 still open *(commit `1054ba0`)*
 
 ## Anti-Patterns
 
