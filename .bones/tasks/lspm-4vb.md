@@ -1,12 +1,13 @@
 ---
 id: lspm-4vb
 title: R7b — dynamic tool schemas (lang/langs/via/manifests enums from active manifests)
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
 
 
 
@@ -248,32 +249,32 @@ Stage `src/mcp-server.ts`, test files, `dist/index.js`, `dist/index.js.map`, `.b
 
 ## Success Criteria
 
-- [ ] `buildDynamicSchemas(router)` factory implemented in `src/mcp-server.ts` (or extracted to `src/schemas.ts` if mcp-server.ts crosses 500 LOC)
-- [ ] Factory returns `{LangEnum, LangsSchema, ManifestEnum, ViaSchema, ManifestsSchema}` derived from router state at call time
-- [ ] `LangEnum` and `LangsSchema` enum values = active langIds (from `listLanguages()` filtered to `status: 'ok'`, deduped)
-- [ ] `ManifestEnum`, `ViaSchema`, `ManifestsSchema` enum values = ok manifest names (from `router.entries` filtered to `status: 'ok'`)
-- [ ] Empty router / all-binary_not_found router → schemas fall back to plain `z.string()` (no enum constraint, tool remains callable)
-- [ ] `symbol_search.langs` schema items expose `enum` with active langs (regression-tested)
-- [ ] `symbol_search.manifests` schema items expose `enum` with ok manifest names; binary_not_found names EXCLUDED (regression-tested)
-- [ ] Every positional tool (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`) publishes `via.enum` with ok manifest names; `via` stays optional
-- [ ] `set_primary.lang` schema is a required enum of active langs
-- [ ] `set_primary.manifest` schema is a required enum of ok manifest names (binary_not_found EXCLUDED)
-- [ ] `lsp.lang` schema is a required enum of active langs (same factory output as `set_primary.lang`; `.describe(...)` text preserved)
-- [ ] `lsp.lang.enum` deep-equals `set_primary.lang.enum` for the same router (single LangEnum source invariant; regression-locked in adversarial battery)
-- [ ] Module-scope `ViaSchema` const removed; R7 TODO comments at line ~32 and ~86 deleted
-- [ ] Tool schemas are STABLE across `set_primary` swaps — enum values identical before and after (regression-tested; critical anti-pattern lock)
-- [ ] Multi-langId manifest contributes all its langIds to the lang enum (no dedupe that drops)
-- [ ] Duplicate langIds across two manifests appear once in the lang enum (Set dedupe works)
-- [ ] Dense router (20 ok manifests) → enum lists all 20 names, preserves `router.entries` order
-- [ ] Single-manifest router → well-formed enum with one value; JSON Schema shape intact
-- [ ] 10 sequential `set_primary` swaps → schema enum values unchanged at every step (dense regression lock)
-- [ ] 226 baseline tests stay green; new tests land (~10–15 new; target ~236–241)
-- [ ] `scripts/smoke-mcp-tool.mjs` extended with `--inspect-schema <tool>` flag (does not break existing positional usage); observed enum arrays for `symbol_search.langs/manifests`, `defs.via`, `set_primary.lang/manifest`, `lsp.lang/via` recorded in `bn log lspm-4vb`
-- [ ] Step 8b: 4 existing R7 negative-test cases (mcp-server.test.ts:447, :754, :755, :761) migrated to router-direct calls (router unit-test layer); ONE new MCP-layer test added asserting Zod rejects out-of-enum values (negative enum-contract coverage)
-- [ ] Empty-router fallback preserves required-vs-optional semantics per param: `set_primary.lang/manifest` and `lsp.lang` stay required; `via` / `langs` / `manifests` stay optional (Step 9 asserts this)
-- [ ] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
-- [ ] Sub-epic `lspm-cnq` SC "MCP tool input schemas built dynamically at startup..." flipped `[ ]` → `[x]`
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R7b complete; R9 still open
+- [x] `buildDynamicSchemas(router)` factory implemented in `src/mcp-server.ts` (or extracted to `src/schemas.ts` if mcp-server.ts crosses 500 LOC)
+- [x] Factory returns `{LangEnum, LangsSchema, ManifestEnum, ViaSchema, ManifestsSchema}` derived from router state at call time
+- [x] `LangEnum` and `LangsSchema` enum values = active langIds (from `listLanguages()` filtered to `status: 'ok'`, deduped)
+- [x] `ManifestEnum`, `ViaSchema`, `ManifestsSchema` enum values = ok manifest names (from `router.entries` filtered to `status: 'ok'`)
+- [x] Empty router / all-binary_not_found router → schemas fall back to plain `z.string()` (no enum constraint, tool remains callable)
+- [x] `symbol_search.langs` schema items expose `enum` with active langs (regression-tested)
+- [x] `symbol_search.manifests` schema items expose `enum` with ok manifest names; binary_not_found names EXCLUDED (regression-tested)
+- [x] Every positional tool (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`) publishes `via.enum` with ok manifest names; `via` stays optional
+- [x] `set_primary.lang` schema is a required enum of active langs
+- [x] `set_primary.manifest` schema is a required enum of ok manifest names (binary_not_found EXCLUDED)
+- [x] `lsp.lang` schema is a required enum of active langs (same factory output as `set_primary.lang`; `.describe(...)` text preserved)
+- [x] `lsp.lang.enum` deep-equals `set_primary.lang.enum` for the same router (single LangEnum source invariant; regression-locked in adversarial battery)
+- [x] Module-scope `ViaSchema` const removed; R7 TODO comments at line ~32 and ~86 deleted
+- [x] Tool schemas are STABLE across `set_primary` swaps — enum values identical before and after (regression-tested; critical anti-pattern lock)
+- [x] Multi-langId manifest contributes all its langIds to the lang enum (no dedupe that drops)
+- [x] Duplicate langIds across two manifests appear once in the lang enum (Set dedupe works)
+- [x] Dense router (20 ok manifests) → enum lists all 20 names, preserves `router.entries` order
+- [x] Single-manifest router → well-formed enum with one value; JSON Schema shape intact
+- [x] 10 sequential `set_primary` swaps → schema enum values unchanged at every step (dense regression lock)
+- [x] 226 baseline tests stay green; new tests land (~10–15 new; target ~236–241)
+- [x] `scripts/smoke-mcp-tool.mjs` extended with `--inspect-schema <tool>` flag (does not break existing positional usage); observed enum arrays for `symbol_search.langs/manifests`, `defs.via`, `set_primary.lang/manifest`, `lsp.lang/via` recorded in `bn log lspm-4vb`
+- [x] Step 8b: 4 existing R7 negative-test cases (mcp-server.test.ts:447, :754, :755, :761) migrated to router-direct calls (router unit-test layer); ONE new MCP-layer test added asserting Zod rejects out-of-enum values (negative enum-contract coverage)
+- [x] Empty-router fallback preserves required-vs-optional semantics per param: `set_primary.lang/manifest` and `lsp.lang` stay required; `via` / `langs` / `manifests` stay optional (Step 9 asserts this)
+- [x] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
+- [x] Sub-epic `lspm-cnq` SC "MCP tool input schemas built dynamically at startup..." flipped `[ ]` → `[x]`
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit notes R7b complete; R9 still open
 
 ## Anti-Patterns
 
