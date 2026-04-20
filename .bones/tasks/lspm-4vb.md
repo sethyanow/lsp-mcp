@@ -1,11 +1,15 @@
 ---
 id: lspm-4vb
 title: R7b — dynamic tool schemas (lang/langs/via/manifests enums from active manifests)
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
+
 
 
 ## Context
@@ -25,12 +29,13 @@ This task does NOT ship:
 
 - `src/mcp-server.ts` (405 LOC) defines shared schemas at module scope: `PositionSchema`, `FileUriSchema`, `LspParamsSchema`, `ViaSchema`. Two R7-TODO comments mark the enum-upgrade points: line 32 above `ViaSchema`, line 86 above `symbol_search.manifests`.
 - `symbol_search` inlines its `langs` and `manifests` schemas (lines ~79-92) as `z.array(z.string()).optional()`.
-- `set_primary` uses `z.string().describe(...)` for both `lang` and `manifest` (lines ~140-149).
-- Positional file-URI tools (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`) all reference the shared `ViaSchema` const.
-- `src/tests/mcp-server.test.ts` has `describe('Tool schemas expose via/manifests'...)` at line ~461. Current assertions: `inputSchema.properties.via` defined + optional; `symbol_search.manifests` is `array` of `string`. R7b extends this to assert `enum` values.
+- `set_primary` uses `z.string().describe(...)` for both `lang` and `manifest` (lines ~150-155, registerTool block at 140-165).
+- The `lsp` (raw passthrough) tool uses `z.string().describe(...)` for `lang` at lines ~284-286 (registerTool block at 277-299). REQUIRED param. R7b must enum-ify this too — parent epic R7 says "Every MCP tool with a `lang` or `langs` parameter declares those as an enum." Skeleton author missed this in initial scope.
+- Positional file-URI tools (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`) all reference the shared `ViaSchema` const for the `via` parameter.
+- `src/tests/mcp-server.test.ts` has `describe('Tool schemas expose via/manifests'...)` at line 461 with 5 existing tests (positional via shape, symbol_search.manifests shape, defs forwards via, refs forwards via, symbol_search forwards manifests). Current assertions: `inputSchema.properties.via` defined + optional; `symbol_search.manifests` is `array` of `string`. R7b extends this to assert `enum` values.
 - `Router.listLanguages()` returns every (lang, manifest) row including binary_not_found — R7b's schema factory filters by `status === 'ok'` and dedupes langIds.
 - `Router.entries` (accessor) exposes all manifest entries in registration order — source for manifest-name enum.
-- Test baseline (post R7 close): 223 green across 7 suites.
+- Test baseline (post R7 close, verified 2026-04-20 fresh `bun run test`): **226 green across 7 suites** (skeleton's original "223" was stale).
 
 ## Design
 
@@ -66,8 +71,11 @@ function buildDynamicSchemas(router: Router): {
 - `langs: LangsSchema` (was inline `z.array(z.string()).optional()`)
 - `manifests: ManifestsSchema` (was inline `z.array(z.string()).optional()`)
 
+`lsp` (raw passthrough) tool:
+- `lang: LangEnum` (was `z.string()`) — REQUIRED. Same `LangEnum` factory output as `set_primary.lang`. Preserve `.describe('Language ID of the target server (e.g. "python", "typescript")')` text on the resulting schema.
+
 Positional file-URI tools (unchanged pattern, just use factory-derived `ViaSchema`):
-- `defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls` — replace module-const `ViaSchema` with factory's `ViaSchema`.
+- `defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls` — replace module-const `ViaSchema` with factory's `ViaSchema`. (Note: `lsp` appears in BOTH lists — `via` here, `lang` above.)
 
 ### Removal of module-level const schemas
 
@@ -123,17 +131,43 @@ Test: for each positional tool (`defs`, `refs`, `impls`, `hover`, `outline`, `di
 
 Remove module-scope `ViaSchema` const. Replace every tool's `via: ViaSchema` with `via: schemas.ViaSchema`. Delete the R7 TODO comment at line 32.
 
-### Step 7 — RED: set_primary.lang is an enum of active langIds
+### Step 7 — RED: set_primary.lang and lsp.lang are enums of active langIds
 
-Test: `set_primary.inputSchema.properties.lang.enum` contains all active langs; `lang` is in `required`. Same for `manifest` → ok manifest names.
+Test (one `it` per tool, both in the same describe block):
+1. `set_primary.inputSchema.properties.lang.enum` contains all active langs; `lang` is in `required`. Same for `manifest` → ok manifest names; `manifest` is in `required`.
+2. `lsp.inputSchema.properties.lang.enum` contains all active langs; `lang` is in `required`. (Note: `lsp` also publishes `via` enum + has `method`, `params`, `via` properties — only `lang` is the new assertion here.)
 
-### Step 8 — GREEN: replace set_primary plain z.string() with LangEnum and ManifestEnum
+Both share the factory's `LangEnum`. Single source-of-truth check: capture `set_primary.lang.enum` and assert `lsp.lang.enum` deep-equals it (no drift between the two consumers).
 
-Drop the `.optional()` suffix for these (already required). Preserve the `.describe(...)` text.
+### Step 8 — GREEN: replace set_primary's and lsp's plain z.string() with LangEnum (and ManifestEnum for set_primary)
+
+In `src/mcp-server.ts`:
+1. `set_primary.inputSchema.lang` → `schemas.LangEnum.describe('langId whose primary to swap (e.g. "python", "bazel").')` (drop the `.optional()` suffix — already required; preserve describe text).
+2. `set_primary.inputSchema.manifest` → `schemas.ManifestEnum.describe('Name of the candidate manifest to promote to primary.')`.
+3. `lsp.inputSchema.lang` → `schemas.LangEnum.describe('Language ID of the target server (e.g. "python", "typescript")')`.
+
+Note: `LangEnum` factory returns either `z.enum(...)` or plain `z.string()` (empty-list fallback) — both support `.describe(...)`. Tests added in Step 7 must pass; baseline `lsp` tests (router routing semantics) stay green.
+
+### Step 8b — Migrate existing R7 negative tests from MCP layer to Router-direct calls
+
+**Why this step exists:** Adversarial planning surfaced that 4 existing test cases pass "unknown" arg values through `client.callTool`, expecting router-level error messages. After enum-ification, Zod intercepts and rejects those values BEFORE the router sees them — the test's expected error message never fires. This is the *correct* new behavior; the test surface is what changes, not the router behavior.
+
+**Affected cases (verified at SRE pass):**
+- `src/tests/mcp-server.test.ts:447-458` — `lsp` tool with `lang: 'rust'` (only `python` configured).
+- `src/tests/mcp-server.test.ts:754` — `set_primary` with `manifest: 'nope'`.
+- `src/tests/mcp-server.test.ts:755` — `set_primary` with `lang: 'cobol'`.
+- `src/tests/mcp-server.test.ts:761` — `set_primary` with `manifest: 'pyright-missing'` (binary_not_found).
+- (`:757` — `manifest: 'rust-analyzer'` for `lang: 'python'` — SURVIVES; both names ARE in the enum, router catches the cross-dispatch. Leave unchanged.)
+
+**Migration:**
+- Move each affected case to a sibling test that calls `Router.setPrimary` / `Router.raw` directly (router unit-test layer). Preserves the router-error-message coverage.
+- Add ONE new MCP-layer test asserting that Zod validation rejects out-of-enum values (negative coverage of the enum contract itself). Shape: call `client.callTool({ name: 'set_primary', arguments: { lang: 'cobol', manifest: 'pyright' } })`, assert `result.isError` is true and message matches Zod's validation format (or just shape — don't over-couple to Zod's exact wording, which can drift across versions).
+
+**Verification:** `bun run test -- --testPathPattern=mcp-server` passes; the migrated router-direct tests still cover the original assertions; the new Zod-rejection test covers the enum contract.
 
 ### Step 9 — RED: empty router falls back to plain string (no enum)
 
-Fixture: `new Router([])`. `client.listTools()`; for each affected tool, verify enum is UNDEFINED on the relevant property and the schema accepts arbitrary strings.
+Fixture: `new Router([])`. `client.listTools()`; for each affected tool that survives empty-router construction (set_primary, symbol_search, lsp, defs/refs/etc are all registered unconditionally; call_hierarchy_* are gated and won't appear), verify enum is UNDEFINED on the relevant property (`langs.items.enum`, `manifests.items.enum`, `via.enum`, `lang.enum`) and the schema accepts arbitrary strings (i.e. plain `type: 'string'` JSON Schema, no `enum` key).
 
 ### Step 10 — GREEN: factory returns unrestricted schemas when arrays are empty
 
@@ -169,27 +203,29 @@ Add to `describe('Tool schemas expose via/manifests'...)`:
 - **Multi-langId manifest**: one manifest declares `langIds: ['typescript', 'javascript']` — langs enum lists BOTH (no dedupe that drops one).
 - **Duplicate langIds across manifests**: two manifests both declare `['python']` — langs enum lists `['python']` once (Set dedupe).
 - **Set_primary schema stability under 10 sequential swaps**: call set_primary 10 times in a loop, assert enum values never change (dense regression lock).
+- **`lsp.lang` enum equals `set_primary.lang` enum**: same router, fetch both schemas, deep-equal the `enum` arrays. Locks the "single LangEnum source" invariant — prevents drift if a future patch wires one tool to a different factory output.
 
 ### Step 16 — Smoke via harness
 
+Per feedback memory `feedback_prefer_reusable_tooling.md`: extend the existing harness, do NOT spawn a sibling script.
+
+**Sub-task 16a** — Extend `scripts/smoke-mcp-tool.mjs` with a `--inspect-schema <tool>` flag:
+- Default behavior (positional `<tool>` arg, no flag) stays unchanged: call the tool, print the JSON result.
+- New mode: when `--inspect-schema <tool-name>` is passed, the harness calls `client.listTools()`, finds the named tool, and pretty-prints its `inputSchema`. No tool invocation.
+- Implementation note: inspect the existing harness shape first (read `scripts/smoke-mcp-tool.mjs` end-to-end) and add the flag in keeping with whatever arg-parsing pattern is already there. Do not introduce a new parser library.
+
+**Pre-step:** Run `bun run build` first so `dist/index.js` reflects R7b source. Skipping this step makes the smoke read pre-R7b schemas and record `enum: undefined` — false negative.
+
+**Sub-task 16b** — Run the smoke and record results in `bn log lspm-4vb`:
+
 ```bash
-node scripts/smoke-mcp-tool.mjs list_languages
-```
-(no change expected — this tool isn't schema-dependent)
-
-Add a new smoke check: print `symbol_search` tool's inputSchema via a one-off script or extend the harness to print tool schemas. Actual command:
-
-```bash
-node -e "
-import('./dist/index.js').then(async () => {
-  // Stdio smoke of listTools — inspect schema shape
-});
-" 
+node scripts/smoke-mcp-tool.mjs --inspect-schema symbol_search
+node scripts/smoke-mcp-tool.mjs --inspect-schema defs
+node scripts/smoke-mcp-tool.mjs --inspect-schema set_primary
+node scripts/smoke-mcp-tool.mjs --inspect-schema lsp
 ```
 
-Simpler: extend `scripts/smoke-mcp-tool.mjs` with a `--inspect-schema <tool>` flag OR add a sibling `scripts/smoke-list-tools.mjs` that calls `client.listTools()` and dumps selected tool schemas. Record the observed enum arrays for `symbol_search.langs`, `symbol_search.manifests`, `defs.via`, `set_primary.lang`, `set_primary.manifest` in `bn log lspm-4vb`.
-
-Reusable harness preference per `feedback_prefer_reusable_tooling.md` — lean toward extending `smoke-mcp-tool.mjs` with a flag.
+Record the observed enum arrays for: `symbol_search.langs.items.enum`, `symbol_search.manifests.items.enum`, `defs.via.enum`, `set_primary.lang.enum`, `set_primary.manifest.enum`, `lsp.lang.enum`, `lsp.via.enum`. Also confirm the unchanged `node scripts/smoke-mcp-tool.mjs list_languages` still succeeds (regression check on the original harness behavior).
 
 ### Step 17 — Full verification
 
@@ -199,7 +235,7 @@ bun run typecheck
 bun run build 2>&1 | tail -5
 ```
 
-Expect 223 baseline + ~10-15 new = ~233-238 green. Typecheck clean. Build succeeds.
+Expect 226 baseline + ~10-15 new = **~236-241 green**. Typecheck clean. Build succeeds. (Baseline confirmed via fresh `bun run test` at 2026-04-20 SRE pass; pre-R7b was 226 not 223 as initially scoped.)
 
 ### Step 18 — Flip sub-epic SC
 
@@ -222,6 +258,8 @@ Stage `src/mcp-server.ts`, test files, `dist/index.js`, `dist/index.js.map`, `.b
 - [ ] Every positional tool (`defs`, `refs`, `impls`, `hover`, `outline`, `diagnostics`, `lsp`, `call_hierarchy_prepare`, `incoming_calls`, `outgoing_calls`) publishes `via.enum` with ok manifest names; `via` stays optional
 - [ ] `set_primary.lang` schema is a required enum of active langs
 - [ ] `set_primary.manifest` schema is a required enum of ok manifest names (binary_not_found EXCLUDED)
+- [ ] `lsp.lang` schema is a required enum of active langs (same factory output as `set_primary.lang`; `.describe(...)` text preserved)
+- [ ] `lsp.lang.enum` deep-equals `set_primary.lang.enum` for the same router (single LangEnum source invariant; regression-locked in adversarial battery)
 - [ ] Module-scope `ViaSchema` const removed; R7 TODO comments at line ~32 and ~86 deleted
 - [ ] Tool schemas are STABLE across `set_primary` swaps — enum values identical before and after (regression-tested; critical anti-pattern lock)
 - [ ] Multi-langId manifest contributes all its langIds to the lang enum (no dedupe that drops)
@@ -229,8 +267,10 @@ Stage `src/mcp-server.ts`, test files, `dist/index.js`, `dist/index.js.map`, `.b
 - [ ] Dense router (20 ok manifests) → enum lists all 20 names, preserves `router.entries` order
 - [ ] Single-manifest router → well-formed enum with one value; JSON Schema shape intact
 - [ ] 10 sequential `set_primary` swaps → schema enum values unchanged at every step (dense regression lock)
-- [ ] 223 baseline tests stay green; new tests land (~10–15 new; target ~233–238)
-- [ ] Smoke: inspect `symbol_search` / `defs` / `set_primary` schemas via (extended) `scripts/smoke-mcp-tool.mjs` or sibling script; observed enum arrays recorded in `bn log lspm-4vb`
+- [ ] 226 baseline tests stay green; new tests land (~10–15 new; target ~236–241)
+- [ ] `scripts/smoke-mcp-tool.mjs` extended with `--inspect-schema <tool>` flag (does not break existing positional usage); observed enum arrays for `symbol_search.langs/manifests`, `defs.via`, `set_primary.lang/manifest`, `lsp.lang/via` recorded in `bn log lspm-4vb`
+- [ ] Step 8b: 4 existing R7 negative-test cases (mcp-server.test.ts:447, :754, :755, :761) migrated to router-direct calls (router unit-test layer); ONE new MCP-layer test added asserting Zod rejects out-of-enum values (negative enum-contract coverage)
+- [ ] Empty-router fallback preserves required-vs-optional semantics per param: `set_primary.lang/manifest` and `lsp.lang` stay required; `via` / `langs` / `manifests` stay optional (Step 9 asserts this)
 - [ ] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
 - [ ] Sub-epic `lspm-cnq` SC "MCP tool input schemas built dynamically at startup..." flipped `[ ]` → `[x]`
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R7b complete; R9 still open
@@ -245,6 +285,8 @@ Stage `src/mcp-server.ts`, test files, `dist/index.js`, `dist/index.js.map`, `.b
 - **NO inlining enum literals at tool-registration sites.** Every enum schema flows through the factory. This keeps the "which tool uses which enum" mapping visible in one place.
 - **NO leaking `ManifestEntry` or `LspServer` references via the schema shape.** Schemas return string-typed values only; `ManifestEnum` yields `string`, not `ManifestEntry`.
 - **NO pre-optimizing via WeakMap / caching across createMcpServer calls.** Each `createMcpServer` call builds fresh schemas from that call's router. Don't cache across calls — tests build many Routers.
+- **NO `.sort()` / `.reverse()` on `router.entries` or `router.listLanguages()` results inside the factory.** Both methods return references to internal state (or arrays derived from internal-state ordering) — in-place mutation corrupts router invariants (R5 first-registered-wins tie-break, `_byName` lookup ordering reflected in error messages). Slice (`[...arr]` / `.slice()`) before any reordering. Default behavior preserves `router.entries` order — no sort needed at all per SC.
+- **NO designing the enum factory to pass-through unknown values to keep negative tests green.** When existing R7 negative tests break (Zod rejecting unknown lang/manifest before router sees them), the correct fix is to migrate those tests to call the router directly (Step 8b). Designing the enum to admit unknown values defeats the entire R7 promise — clients would see the enum hint but find that any string still works, and the schema becomes advisory in name only.
 
 ## Key Considerations
 
@@ -259,15 +301,106 @@ Stage `src/mcp-server.ts`, test files, `dist/index.js`, `dist/index.js.map`, `.b
 
 ### Failure catalog (adversarial planning)
 
-Filled in by `adversarial-planning` skill at session start. Starter notes:
-- Input Hostility: duplicate langIds across manifests — Set dedupe expected, regression test in Step 15.
-- State Corruption: re-registration on set_primary — forbidden, regression test in Step 13.
-- Resource Exhaustion: dense 20-manifest router — test in Step 15; zod enum should handle arbitrarily many values.
-- Encoding Boundaries: non-ASCII langIds in enum values — zod and JSON Schema preserve strings byte-identically; tests in R6 (`listLanguages`) already cover the underlying data.
-- Dependency Treachery: MCP SDK zod-to-JSON-Schema converter version drift — verify at Step 2 that the converter emits `enum` for `z.enum`. Fallback: write a manual JSON Schema builder if the SDK's converter misbehaves (unlikely).
+Walked components: factory `buildDynamicSchemas`, lang-enum derivation, manifest-enum derivation, tool-surface wiring, empty-list fallback, module-const removal, test fixtures, smoke harness extension. Categories with no applicable finding for a given component are noted as skipped at the end.
+
+#### `buildDynamicSchemas(router)` factory
+
+**State Corruption: factory accidentally mutates router.entries via in-place sort**
+- Assumption: factory reads `router.entries` and `router.listLanguages()` without mutation.
+- Betrayal: developer reaches for `router.entries.sort(...)` (or `.reverse()`) to normalize ordering — `Array.prototype.sort` mutates in place.
+- Consequence: subsequent `Router.setPrimary` error messages list "Known: ..." in a corrupted order; `_byName` lookup still works but downstream invariants on `_entries` order silently break (R5 first-registered-wins tie-break).
+- Mitigation: factory MUST iterate or slice (`[...router.entries]` or `router.entries.slice()`) before any reordering. Default of preserving `router.entries` insertion order — already required by SC "Dense router → preserves `router.entries` order" — needs no sort at all. **Add to anti-patterns: NO `.sort()` on `router.entries` or `router.listLanguages()` results.**
+
+**Dependency Treachery: MCP SDK zod-to-JSON-Schema converter drift**
+- Assumption: `@modelcontextprotocol/sdk` emits `enum: [...]` JSON Schema for `z.enum([...])`.
+- Betrayal: SDK upgrade changes converter to emit `const`, `oneOf` of literals, or `anyOf`.
+- Consequence: assertions on `inputSchema.properties.X.enum` fail; observable behavior may still be correct from the client's perspective but the regression battery breaks.
+- Mitigation: Step 2 verifies the converter emits `enum` for `z.enum` empirically before downstream tests are written. If the converter misbehaves, fallback is a manual JSON Schema builder (out of R7b unless triggered).
+
+#### Lang enum + manifest enum derivation
+
+**Input Hostility: duplicate langIds across manifests**
+- Assumption: dedupe is required because multi-candidate routing yields multiple `listLanguages()` rows for the same lang.
+- Betrayal: naive `.map()` produces duplicates.
+- Consequence: zod enum with duplicate values is technically valid but JSON Schema enums lose semantic clarity; some validators warn.
+- Mitigation: Set-based dedupe in factory; Step 15 adversarial test "Duplicate langIds across manifests" locks the invariant.
+
+**Encoding Boundaries: empty / whitespace manifest names or langIds**
+- Assumption: `PluginManifestSchema` rejects empty strings upstream.
+- Betrayal: schema admits `name: ""` or `langIds: ["", "python"]` — factory would publish empty-string enum value, which is valid JSON Schema but breaks UX.
+- Consequence: agents see `""` as a callable choice; tools route to "" and fail at runtime.
+- Mitigation: out of R7b scope to fix upstream — flag for a future task to verify `PluginManifestSchema` enforces non-empty strings on `name` and `langIds[]`. R7b factory passes strings through verbatim; if upstream tightens later, R7b stays correct.
+
+#### Tool-surface wiring (set_primary, lsp, symbol_search)
+
+**Input Hostility: existing R7 negative tests now fail Zod validation BEFORE reaching the router** — **CRITICAL, IMPLEMENTATION-BLOCKING**
+- Assumption: existing tests asserting router-level error messages (`Unknown manifest: nope`, `Unknown lang: cobol`, `binary_not_found`) reach the router unimpeded.
+- Betrayal: enum-ified `set_primary.lang` and `set_primary.manifest` (and `lsp.lang`) reject "unknown" values at the MCP schema layer. The router never sees them; the test sees a Zod validation error instead of the router's specific error string.
+- Consequence: 4 existing test cases break:
+  - `src/tests/mcp-server.test.ts:447-458` — `lsp` tool called with `lang: 'rust'` when only `python` is configured.
+  - `src/tests/mcp-server.test.ts:754` — `set_primary` with `manifest: 'nope'` (unknown name).
+  - `src/tests/mcp-server.test.ts:755` — `set_primary` with `lang: 'cobol'` (unknown lang).
+  - `src/tests/mcp-server.test.ts:761` — `set_primary` with `manifest: 'pyright-missing'` (binary_not_found, EXCLUDED from enum).
+  - (`src/tests/mcp-server.test.ts:757` — `set_primary` with `manifest: 'rust-analyzer'` for `lang: 'python'` — SURVIVES because both names ARE in the enum; router catches the cross-dispatch.)
+- Mitigation: implementing agent must update these 4 cases to call `Router.setPrimary` / `router.raw` directly (router-unit testing) instead of through MCP. Router-direct tests preserve the runtime-validation invariant being tested without coupling to the MCP schema layer. Rejecting at Zod is the *correct* new behavior — the test surface, not the router behavior, is what changes.
+- Anti-pattern lock: do NOT design `LangEnum` or `ManifestEnum` to pass-through unknown values just to keep these MCP tests green. That defeats the point of dynamic enums (clients would see the enum hint but still be allowed to call with unknown values).
+- Add Step 8b after Step 8: explicitly migrate the 4 affected cases to Router-direct calls. New regression test should remain at MCP layer asserting that Zod validation rejects out-of-enum values (negative coverage of the enum contract itself).
+
+**State Corruption: schema regen on set_primary**
+- Assumption: schemas built once at `createMcpServer` time, immutable for session lifetime.
+- Betrayal: a future "smart" optimization tries to re-register tools when primary changes.
+- Consequence: MCP clients cache tool schemas at session start; mid-session re-registration silently invalidates client state.
+- Mitigation: Step 13 regression test (10 swaps → schemas unchanged); anti-pattern explicit; design invariant — `set_primary` mutates `_langMap.primary` only, not membership.
+
+**Coherence Drift: `lsp.lang` and `set_primary.lang` enum divergence**
+- Assumption: both consumers wire to the same `LangEnum` factory output.
+- Betrayal: a future patch creates a parallel enum (e.g., `LangEnumForRawLsp`) for one consumer.
+- Consequence: enum drift; users see different valid langs depending on which tool's schema they read.
+- Mitigation: Step 15 adversarial deep-equal test (`lsp.lang.enum === set_primary.lang.enum`); SC bullet locks the invariant.
+
+#### Empty-list fallback
+
+**State Corruption: empty-list path silently picks wrong fallback**
+- Assumption: when `arr.length === 0`, factory returns plain `z.string()` (not `z.string().optional()` for required params, and the right wrapper for optional ones).
+- Betrayal: factory branches on length but returns a uniformly-shaped output that doesn't preserve required-vs-optional semantics for each param.
+- Consequence: `set_primary.lang` becomes optional in empty-router edge case; tool callable without `lang`, router throws confusing error.
+- Mitigation: Factory returns FIVE distinct schemas (LangEnum, LangsSchema, ManifestEnum, ViaSchema, ManifestsSchema) — each with its own optional/required wrapping in BOTH the enum and string-fallback branches. Step 9 RED tests must assert required-ness preserved in the empty-router fallback.
+
+#### Test fixtures
+
+**Temporal Betrayal: shared-router fixtures cross-test pollution**
+- Assumption: `beforeAll`-shared router doesn't carry mutated state across tests in the describe block.
+- Betrayal: a test invokes `set_primary` to verify swap behavior; a later test in the same block reads the (now-mutated) primary and gets unexpected results.
+- Consequence: test order dependency — passes alone, fails in suite.
+- Mitigation: Skeleton's Key Considerations already addresses ("Prefer per-test for empty-router and all-missing fixtures"). For the existing `describe('Tool schemas expose via/manifests')` block which uses `beforeAll`, the new R7b tests that invoke `set_primary` (Step 13) MUST use a per-test router via `buildClientServer(new Router([...]))` — not the shared `pyServer`-only router.
+
+#### `scripts/smoke-mcp-tool.mjs --inspect-schema` extension
+
+**Dependency Treachery: smoke runs against stale build**
+- Assumption: harness uses fresh `dist/index.js` matching current source.
+- Betrayal: agent forgets to `bun run build` before smoke; harness reports pre-R7b schemas (no enums).
+- Consequence: agent records observed enums as "no enum present" and falsely concludes R7b regressed.
+- Mitigation: Step 16 must explicitly include `bun run build` as a prerequisite. Step 17 already runs build last; bring the build step forward to before Step 16.
+
+**Input Hostility: `--inspect-schema` invoked without tool name**
+- Assumption: caller passes a valid tool name after the flag.
+- Betrayal: `node scripts/smoke-mcp-tool.mjs --inspect-schema` (no value) — flag-arg parser may consume nothing or crash.
+- Consequence: confusing failure mode for whoever runs the smoke later.
+- Mitigation: validate flag value present; print one-line usage and exit 1 if not. Hygiene only — not behavior-affecting.
+
+#### Categories skipped (no applicable finding)
+
+- **Resource Exhaustion** (factory): manifest count is bounded by author-controlled discovery (~12 builtin + handful of user-added). 20-manifest dense test at Step 15 covers reasonable upper bound. No defensive cap warranted.
+- **Encoding Boundaries** (tool-surface wiring): no transformation between manifest names and schema enum values; bytes pass through.
+- **Temporal Betrayal** (factory call ordering): factory must be called BEFORE any `registerTool` — single linear sequence inside `createMcpServer`. No concurrency. No deferred initialization.
+- **Resource Exhaustion** (smoke harness): one-shot script, bounded I/O.
 
 ## Dependencies
 
 - **Blocks:** `lspm-cnq` (parent sub-epic; R7b closes the dynamic-schemas SC bullet)
 - **Blocked by:** none — R7 (`lspm-zw9`) closed; router exposes `listLanguages()` and `entries` accessor already
 - **Unlocks:** Phase 1 acceptance demo (fresh CC session inspects tool schema to discover active LSPs); R9 using-lsp-mcp skill (skill content references the enum-surfaced discovery UX)
+
+## Log
+
+- [2026-04-20T08:21:28Z] [Seth] Step 16 smoke (post bun run build, dist/index.js): scripts/smoke-mcp-tool.mjs --inspect-schema observed enums on dev box (12 builtins, 7 ok / 5 binary_not_found): symbol_search.langs.items.enum=[c,cpp,objective-c,objective-cpp,go,python,rust,svelte,typescript,typescriptreact,javascript,javascriptreact,zig] (13 langs); symbol_search.manifests.items.enum=[clangd,gopls,pyright,rust-analyzer,svelte-language-server,typescript-language-server,zls] (7 ok, binary_not_found EXCLUDED); defs.via.enum=same 7 ok manifests; set_primary.lang.enum=same 13 langs (REQUIRED); set_primary.manifest.enum=same 7 ok manifests (REQUIRED, binary_not_found EXCLUDED); lsp.lang.enum=same 13 langs (REQUIRED, deep-equals set_primary.lang.enum); lsp.via.enum=same 7 ok manifests. Original positional invocation 'list_languages' still works (regression check passed).

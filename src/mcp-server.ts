@@ -2,6 +2,64 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { Router } from './router.js';
 
+/**
+ * Either a `z.enum([...])` over the given values, or a plain `z.string()`
+ * when the list is empty (zod's `z.enum([])` throws). Empty-list fallback
+ * preserves callability of the tool but drops the enum hint.
+ */
+function enumOrString(
+    values: string[]
+): z.ZodString | z.ZodEnum<[string, ...string[]]> {
+    return values.length > 0
+        ? z.enum(values as [string, ...string[]])
+        : z.string();
+}
+
+/**
+ * Build per-router schemas whose enum values reflect the router's currently
+ * active manifest set. Called once at `createMcpServer` time; the resulting
+ * schemas are wired into `registerTool` calls. Schemas are STABLE across
+ * `set_primary` swaps — the swap mutates which candidate is primary, not
+ * the membership of active langs / ok manifests.
+ *
+ * Empty-list fallback: zod's `z.enum([])` throws, so when the router has
+ * zero active langs (or zero ok manifests), the corresponding schema falls
+ * back to plain `z.string()`. Tools remain callable; clients just don't see
+ * the enum hint and the runtime router validation (R5/R7) still rejects
+ * unknown names.
+ */
+function buildDynamicSchemas(router: Router): {
+    LangEnum: z.ZodString | z.ZodEnum<[string, ...string[]]>;
+    LangsSchema: z.ZodOptional<z.ZodArray<z.ZodString | z.ZodEnum<[string, ...string[]]>>>;
+    ManifestEnum: z.ZodString | z.ZodEnum<[string, ...string[]]>;
+    ManifestsSchema: z.ZodOptional<z.ZodArray<z.ZodString | z.ZodEnum<[string, ...string[]]>>>;
+    ViaSchema: z.ZodOptional<z.ZodString | z.ZodEnum<[string, ...string[]]>>;
+} {
+    const okLangs = Array.from(
+        new Set(
+            router
+                .listLanguages()
+                .filter((row) => row.status === 'ok')
+                .map((row) => row.lang)
+        )
+    );
+    const okManifestNames = router.entries
+        .filter((e) => e.status === 'ok')
+        .map((e) => e.manifest.name);
+    const langItem = enumOrString(okLangs);
+    const manifestItem = enumOrString(okManifestNames);
+
+    return {
+        LangEnum: langItem,
+        LangsSchema: z.array(langItem).optional(),
+        ManifestEnum: manifestItem,
+        ManifestsSchema: z.array(manifestItem).optional(),
+        ViaSchema: manifestItem
+            .describe('Manifest name to target (overrides primary routing).')
+            .optional(),
+    };
+}
+
 const PositionSchema = z.object({
     line: z.number().int().min(0).describe('0-based line number'),
     character: z.number().int().min(0).describe('0-based character offset'),
@@ -29,12 +87,6 @@ const LspParamsSchema = z
     .union([z.record(z.any()), z.array(z.any()), z.null()])
     .describe('JSON-RPC params (object, array, or null)');
 
-// R7 (downstream task): replace with z.enum() over active manifest names.
-const ViaSchema = z
-    .string()
-    .optional()
-    .describe('Manifest name to target (overrides primary routing).');
-
 /**
  * Create the meta-LSP MCP server.
  * All tools delegate to the router which fans requests to the appropriate
@@ -59,6 +111,8 @@ export function createMcpServer(router: Router): McpServer {
         version: '0.1.0',
     });
 
+    const schemas = buildDynamicSchemas(router);
+
     // ---- symbol_search -------------------------------------------------------
 
     server.registerTool(
@@ -76,20 +130,13 @@ export function createMcpServer(router: Router): McpServer {
                     .describe(
                         'Filter by symbol kind (e.g. "class", "function", "variable"). Optional.'
                     ),
-                langs: z
-                    .array(z.string())
-                    .optional()
-                    .describe(
-                        'Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' +
-                            'Omit to search all configured languages.'
-                    ),
-                // R7 (downstream task): replace with z.enum() over active manifest names.
-                manifests: z
-                    .array(z.string())
-                    .optional()
-                    .describe(
-                        'Restrict search to specific manifest names (overrides primary-only fan-out).'
-                    ),
+                langs: schemas.LangsSchema.describe(
+                    'Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' +
+                        'Omit to search all configured languages.'
+                ),
+                manifests: schemas.ManifestsSchema.describe(
+                    'Restrict search to specific manifest names (overrides primary-only fan-out).'
+                ),
             },
         },
         async ({ name, kind, langs, manifests }) => {
@@ -147,12 +194,12 @@ export function createMcpServer(router: Router): McpServer {
                 'Throws if the lang or manifest is unknown, if the manifest is not a ' +
                 "candidate for the lang, or if the manifest's binary is not on PATH.",
             inputSchema: {
-                lang: z
-                    .string()
-                    .describe('langId whose primary to swap (e.g. "python", "bazel").'),
-                manifest: z
-                    .string()
-                    .describe('Name of the candidate manifest to promote to primary.'),
+                lang: schemas.LangEnum.describe(
+                    'langId whose primary to swap (e.g. "python", "bazel").'
+                ),
+                manifest: schemas.ManifestEnum.describe(
+                    'Name of the candidate manifest to promote to primary.'
+                ),
             },
         },
         async ({ lang, manifest }) => {
@@ -172,7 +219,7 @@ export function createMcpServer(router: Router): McpServer {
             description:
                 'Go-to-definition: returns the location(s) where the symbol at the given ' +
                 'position is defined.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas.ViaSchema },
         },
         async ({ file, pos, via }) => {
             try {
@@ -189,7 +236,7 @@ export function createMcpServer(router: Router): McpServer {
         'refs',
         {
             description: 'Find all references to the symbol at the given position.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas.ViaSchema },
         },
         async ({ file, pos, via }) => {
             try {
@@ -210,7 +257,7 @@ export function createMcpServer(router: Router): McpServer {
             description:
                 'Find implementations (concrete subclasses / interface implementations) of ' +
                 'the symbol at the given position.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas.ViaSchema },
         },
         async ({ file, pos, via }) => {
             try {
@@ -227,7 +274,7 @@ export function createMcpServer(router: Router): McpServer {
         'hover',
         {
             description: 'Return type information and documentation for the symbol at the given position.',
-            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
+            inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas.ViaSchema },
         },
         async ({ file, pos, via }) => {
             try {
@@ -244,7 +291,7 @@ export function createMcpServer(router: Router): McpServer {
         'outline',
         {
             description: 'List all symbols defined in a file (document symbol outline).',
-            inputSchema: { file: FileUriSchema, via: ViaSchema },
+            inputSchema: { file: FileUriSchema, via: schemas.ViaSchema },
         },
         async ({ file, via }) => {
             try {
@@ -261,7 +308,7 @@ export function createMcpServer(router: Router): McpServer {
         'diagnostics',
         {
             description: 'Return errors and warnings for a file.',
-            inputSchema: { file: FileUriSchema, via: ViaSchema },
+            inputSchema: { file: FileUriSchema, via: schemas.ViaSchema },
         },
         async ({ file, via }) => {
             try {
@@ -281,12 +328,12 @@ export function createMcpServer(router: Router): McpServer {
                 'Raw LSP passthrough. Send any LSP method directly to the server configured ' +
                 'for the given language. Use for methods not covered by the canonical verbs.',
             inputSchema: {
-                lang: z
-                    .string()
-                    .describe('Language ID of the target server (e.g. "python", "typescript")'),
+                lang: schemas.LangEnum.describe(
+                    'Language ID of the target server (e.g. "python", "typescript")'
+                ),
                 method: z.string().describe('LSP method name (e.g. "textDocument/codeLens")'),
                 params: LspParamsSchema,
-                via: ViaSchema,
+                via: schemas.ViaSchema,
             },
         },
         async ({ lang, method, params, via }) => {
@@ -310,7 +357,7 @@ export function createMcpServer(router: Router): McpServer {
                 description:
                     'Prepare call-hierarchy items at the given position. Pass a returned item to ' +
                     'incoming_calls or outgoing_calls to explore the graph.',
-                inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema },
+                inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas.ViaSchema },
             },
             async ({ file, pos, via }) => {
                 try {
@@ -329,7 +376,7 @@ export function createMcpServer(router: Router): McpServer {
                     item: z
                         .record(z.any())
                         .describe('A CallHierarchyItem from call_hierarchy_prepare'),
-                    via: ViaSchema,
+                    via: schemas.ViaSchema,
                 },
             },
             async ({ item, via }) => {
@@ -349,7 +396,7 @@ export function createMcpServer(router: Router): McpServer {
                     item: z
                         .record(z.any())
                         .describe('A CallHierarchyItem from call_hierarchy_prepare'),
-                    via: ViaSchema,
+                    via: schemas.ViaSchema,
                 },
             },
             async ({ item, via }) => {

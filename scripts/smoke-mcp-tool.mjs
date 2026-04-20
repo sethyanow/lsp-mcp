@@ -7,13 +7,14 @@
 //   node scripts/smoke-mcp-tool.mjs                       # default: list_languages
 //   node scripts/smoke-mcp-tool.mjs list_languages        # explicit
 //   node scripts/smoke-mcp-tool.mjs symbol_search '{"name":"foo"}'
+//   node scripts/smoke-mcp-tool.mjs --inspect-schema set_primary  # print tool's inputSchema
 //
 // Env overrides:
 //   LSP_MCP_CONFIG        — passed through; defaults to a nonexistent path so the
 //                           server falls back to built-in manifests only
 //   LSP_MCP_MANIFESTS_DIR — passed through if set
 //
-// Exit codes: 0 on success, 1 on MCP error or transport failure.
+// Exit codes: 0 on success, 1 on MCP error, transport failure, or bad usage.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -23,7 +24,21 @@ import path from 'node:path';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distEntry = path.join(repoRoot, 'dist', 'index.js');
 
-const [, , toolName = 'list_languages', argsJson = '{}'] = process.argv;
+let mode = 'invoke';
+let toolName = 'list_languages';
+let argsJson = '{}';
+
+if (process.argv[2] === '--inspect-schema') {
+    mode = 'inspect-schema';
+    toolName = process.argv[3];
+    if (!toolName) {
+        console.error('usage: --inspect-schema <tool>');
+        process.exit(1);
+    }
+} else {
+    if (process.argv[2]) toolName = process.argv[2];
+    if (process.argv[3]) argsJson = process.argv[3];
+}
 
 let args;
 try {
@@ -50,10 +65,18 @@ try {
     const { tools } = await client.listTools();
     console.log(`tools (${tools.length}): ${tools.map((t) => t.name).join(', ')}`);
 
-    if (!tools.find((t) => t.name === toolName)) {
+    const tool = tools.find((t) => t.name === toolName);
+    if (!tool) {
         console.error(`tool '${toolName}' not registered on server`);
         await client.close();
         process.exit(1);
+    }
+
+    if (mode === 'inspect-schema') {
+        console.log(`\n${toolName}.inputSchema:`);
+        console.log(JSON.stringify(tool.inputSchema, null, 2));
+        await client.close();
+        process.exit(0);
     }
 
     const result = await client.callTool({ name: toolName, arguments: args });

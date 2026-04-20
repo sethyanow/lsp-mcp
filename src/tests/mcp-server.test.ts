@@ -560,6 +560,475 @@ describe('Tool schemas expose via/manifests', () => {
             spy.mockRestore();
         }
     });
+
+    it('symbol_search.langs is an enum of active langIds', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver' });
+        const r = new Router(entriesFrom([py, ts]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const tool = tools.find((t) => t.name === 'symbol_search')!;
+            const schema = tool.inputSchema as {
+                properties?: { langs?: { items?: { enum?: string[] } } };
+            };
+            expect(schema.properties?.langs?.items?.enum).toEqual(
+                expect.arrayContaining(['python', 'typescript'])
+            );
+            expect(schema.properties?.langs?.items?.enum).toHaveLength(2);
+        } finally {
+            await td();
+        }
+    });
+
+    it('every positional tool publishes via.enum with OK manifest names; via stays optional', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], {
+            name: 'pyright',
+            callHierarchy: true,
+        });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver' });
+        const broken = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-missing' });
+        const r = new Router([
+            { manifest: py.manifest, server: py, sourceKind: 'config-file', status: 'ok' },
+            { manifest: ts.manifest, server: ts, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: broken.manifest,
+                server: broken,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const positional = [
+                'defs', 'refs', 'impls', 'hover', 'outline', 'diagnostics', 'lsp',
+                'call_hierarchy_prepare', 'incoming_calls', 'outgoing_calls',
+            ];
+            for (const name of positional) {
+                const tool = tools.find((t) => t.name === name);
+                expect(tool).toBeDefined();
+                const schema = tool!.inputSchema as {
+                    properties?: { via?: { enum?: string[] } };
+                    required?: string[];
+                };
+                expect(schema.properties?.via?.enum).toEqual(
+                    expect.arrayContaining(['pyright', 'tsserver'])
+                );
+                expect(schema.properties?.via?.enum).toHaveLength(2);
+                expect(schema.properties?.via?.enum).not.toContain('pyright-missing');
+                expect(schema.required ?? []).not.toContain('via');
+            }
+        } finally {
+            await td();
+        }
+    });
+
+    it('set_primary.lang and set_primary.manifest are required enums of active langs / OK manifest names', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver' });
+        const broken = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-missing' });
+        const r = new Router([
+            { manifest: py.manifest, server: py, sourceKind: 'config-file', status: 'ok' },
+            { manifest: ts.manifest, server: ts, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: broken.manifest,
+                server: broken,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const tool = tools.find((t) => t.name === 'set_primary')!;
+            const schema = tool.inputSchema as {
+                properties?: {
+                    lang?: { enum?: string[] };
+                    manifest?: { enum?: string[] };
+                };
+                required?: string[];
+            };
+            // lang: required enum of active langs (deduped — python appears once even though two manifests declare it)
+            expect(schema.properties?.lang?.enum).toEqual(
+                expect.arrayContaining(['python', 'typescript'])
+            );
+            expect(schema.properties?.lang?.enum).toHaveLength(2);
+            expect(schema.required ?? []).toContain('lang');
+            // manifest: required enum of OK names; pyright-missing EXCLUDED
+            expect(schema.properties?.manifest?.enum).toEqual(
+                expect.arrayContaining(['pyright', 'tsserver'])
+            );
+            expect(schema.properties?.manifest?.enum).toHaveLength(2);
+            expect(schema.properties?.manifest?.enum).not.toContain('pyright-missing');
+            expect(schema.required ?? []).toContain('manifest');
+        } finally {
+            await td();
+        }
+    });
+
+    // ---- Adversarial battery (lspm-4vb Step 15) -------------------------
+    // Patterns: singular, dense, multi-langId, redundant, state-transitions
+    // (10 swaps), second-run, encoding-boundaries. Each test asserts a
+    // structural invariant the factory must hold.
+
+    it('adversarial-singular: one-manifest router → well-formed enum with single value', async () => {
+        const only = makeMockServer(['python'], ['**/*.py'], { name: 'only-one' });
+        const r = new Router(entriesFrom([only]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const ss = tools.find((t) => t.name === 'symbol_search')!;
+            const ssSchema = ss.inputSchema as {
+                properties?: { manifests?: { items?: { enum?: string[] } } };
+            };
+            // single-element array, NOT collapsed to a non-array shape
+            expect(ssSchema.properties?.manifests?.items?.enum).toEqual(['only-one']);
+            expect(Array.isArray(ssSchema.properties?.manifests?.items?.enum)).toBe(true);
+        } finally {
+            await td();
+        }
+    });
+
+    it('adversarial-dense: 20 OK manifests → enum lists all 20, preserves router.entries registration order', async () => {
+        const N = 20;
+        const servers = Array.from({ length: N }, (_, i) =>
+            makeMockServer([`lang-${i}`], [`**/*.l${i}`], { name: `manifest-${i}` })
+        );
+        const r = new Router(entriesFrom(servers));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const ss = tools.find((t) => t.name === 'symbol_search')!;
+            const ssSchema = ss.inputSchema as {
+                properties?: { manifests?: { items?: { enum?: string[] } } };
+            };
+            const expectedNames = Array.from({ length: N }, (_, i) => `manifest-${i}`);
+            expect(ssSchema.properties?.manifests?.items?.enum).toEqual(expectedNames);
+        } finally {
+            await td();
+        }
+    });
+
+    it('adversarial-multi-langId: one manifest with langIds=[ts, js] contributes BOTH to lang enum (no langId drop)', async () => {
+        const tsjs = makeMockServer(['typescript', 'javascript'], ['**/*.{ts,js}'], {
+            name: 'tsserver',
+        });
+        const r = new Router(entriesFrom([tsjs]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const setPrim = tools.find((t) => t.name === 'set_primary')!;
+            const spSchema = setPrim.inputSchema as {
+                properties?: { lang?: { enum?: string[] } };
+            };
+            expect(spSchema.properties?.lang?.enum).toEqual(
+                expect.arrayContaining(['typescript', 'javascript'])
+            );
+            expect(spSchema.properties?.lang?.enum).toHaveLength(2);
+        } finally {
+            await td();
+        }
+    });
+
+    it('adversarial-redundant: two manifests both declaring [python] → langs enum lists python once (Set dedupe)', async () => {
+        const a = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const b = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const r = new Router(entriesFrom([a, b]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const setPrim = tools.find((t) => t.name === 'set_primary')!;
+            const spSchema = setPrim.inputSchema as {
+                properties?: { lang?: { enum?: string[] } };
+            };
+            expect(spSchema.properties?.lang?.enum).toEqual(['python']);
+        } finally {
+            await td();
+        }
+    });
+
+    it('adversarial-state-transitions: 10 sequential set_primary swaps → schema enums unchanged at every step', async () => {
+        const a = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const b = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const r = new Router(entriesFrom([a, b]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const initial = await c.listTools();
+            const captureEnum = (listResp: typeof initial, name: string): string[] | undefined => {
+                const tool = listResp.tools.find((t) => t.name === name)!;
+                const schema = tool.inputSchema as {
+                    properties?: { manifests?: { items?: { enum?: string[] } } };
+                };
+                return schema.properties?.manifests?.items?.enum;
+            };
+            const baseline = captureEnum(initial, 'symbol_search');
+            for (let i = 0; i < 10; i++) {
+                const target = i % 2 === 0 ? 'pyright-fork' : 'pyright';
+                await c.callTool({
+                    name: 'set_primary',
+                    arguments: { lang: 'python', manifest: target },
+                });
+                const list = await c.listTools();
+                expect(captureEnum(list, 'symbol_search')).toEqual(baseline);
+            }
+        } finally {
+            await td();
+        }
+    });
+
+    it('adversarial-second-run: buildDynamicSchemas via two separate createMcpServer calls on the same router → identical schemas', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver' });
+        const r = new Router(entriesFrom([py, ts]));
+        const first = await buildClientServer(r);
+        const second = await buildClientServer(r);
+        try {
+            const firstTools = await first.client.listTools();
+            const secondTools = await second.client.listTools();
+            // Compare set_primary schemas across both server instances built from
+            // the same router — schemas must be byte-identical (no random state,
+            // no mutation across calls).
+            const firstSP = firstTools.tools.find((t) => t.name === 'set_primary')!;
+            const secondSP = secondTools.tools.find((t) => t.name === 'set_primary')!;
+            expect(secondSP.inputSchema).toEqual(firstSP.inputSchema);
+            const firstSS = firstTools.tools.find((t) => t.name === 'symbol_search')!;
+            const secondSS = secondTools.tools.find((t) => t.name === 'symbol_search')!;
+            expect(secondSS.inputSchema).toEqual(firstSS.inputSchema);
+        } finally {
+            await first.teardown();
+            await second.teardown();
+        }
+    });
+
+    it('adversarial-encoding-boundaries: non-ASCII langIds and manifest names preserved byte-identically in enum', async () => {
+        // Non-ASCII manifest name + langId — JSON Schema preserves strings
+        // byte-identically; zod doesn't transform.
+        const m = makeMockServer(['日本語'], ['**/*.ja'], { name: 'lsp-très-special' });
+        const r = new Router(entriesFrom([m]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const setPrim = tools.find((t) => t.name === 'set_primary')!;
+            const spSchema = setPrim.inputSchema as {
+                properties?: {
+                    lang?: { enum?: string[] };
+                    manifest?: { enum?: string[] };
+                };
+            };
+            expect(spSchema.properties?.lang?.enum).toEqual(['日本語']);
+            expect(spSchema.properties?.manifest?.enum).toEqual(['lsp-très-special']);
+        } finally {
+            await td();
+        }
+    });
+
+    it('set_primary swap does NOT alter tool schemas (R7 anti-pattern lock: schemas built once, stable across swaps)', async () => {
+        const pyrightA = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightB = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const r = new Router(entriesFrom([pyrightA, pyrightB]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            // Snapshot before swap.
+            const before = await c.listTools();
+            const ssBefore = before.tools.find((t) => t.name === 'symbol_search')!.inputSchema;
+            const setPrimBefore = before.tools.find((t) => t.name === 'set_primary')!.inputSchema;
+            const lspBefore = before.tools.find((t) => t.name === 'lsp')!.inputSchema;
+            const defsBefore = before.tools.find((t) => t.name === 'defs')!.inputSchema;
+
+            // Swap primary from pyright → pyright-fork.
+            await c.callTool({
+                name: 'set_primary',
+                arguments: { lang: 'python', manifest: 'pyright-fork' },
+            });
+
+            // Re-fetch and compare deep-equal.
+            const after = await c.listTools();
+            const ssAfter = after.tools.find((t) => t.name === 'symbol_search')!.inputSchema;
+            const setPrimAfter = after.tools.find((t) => t.name === 'set_primary')!.inputSchema;
+            const lspAfter = after.tools.find((t) => t.name === 'lsp')!.inputSchema;
+            const defsAfter = after.tools.find((t) => t.name === 'defs')!.inputSchema;
+
+            expect(ssAfter).toEqual(ssBefore);
+            expect(setPrimAfter).toEqual(setPrimBefore);
+            expect(lspAfter).toEqual(lspBefore);
+            expect(defsAfter).toEqual(defsBefore);
+        } finally {
+            await td();
+        }
+    });
+
+    it('all-binary_not_found router → no enum on lang/manifest/via schemas (factory ok-filter)', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-missing' });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver-missing' });
+        const r = new Router([
+            { manifest: py.manifest, server: py, sourceKind: 'config-file', status: 'binary_not_found' },
+            { manifest: ts.manifest, server: ts, sourceKind: 'config-file', status: 'binary_not_found' },
+        ]);
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+
+            const symbolSearch = tools.find((t) => t.name === 'symbol_search')!;
+            const ssSchema = symbolSearch.inputSchema as {
+                properties?: {
+                    langs?: { items?: { enum?: unknown } };
+                    manifests?: { items?: { enum?: unknown } };
+                };
+            };
+            expect(ssSchema.properties?.langs?.items?.enum).toBeUndefined();
+            expect(ssSchema.properties?.manifests?.items?.enum).toBeUndefined();
+
+            const setPrim = tools.find((t) => t.name === 'set_primary')!;
+            const spSchema = setPrim.inputSchema as {
+                properties?: { lang?: { enum?: unknown }; manifest?: { enum?: unknown } };
+            };
+            expect(spSchema.properties?.lang?.enum).toBeUndefined();
+            expect(spSchema.properties?.manifest?.enum).toBeUndefined();
+
+            const lspTool = tools.find((t) => t.name === 'lsp')!;
+            const lspSchema = lspTool.inputSchema as {
+                properties?: { lang?: { enum?: unknown }; via?: { enum?: unknown } };
+            };
+            expect(lspSchema.properties?.lang?.enum).toBeUndefined();
+            expect(lspSchema.properties?.via?.enum).toBeUndefined();
+
+            const defs = tools.find((t) => t.name === 'defs')!;
+            const defsSchema = defs.inputSchema as {
+                properties?: { via?: { enum?: unknown } };
+            };
+            expect(defsSchema.properties?.via?.enum).toBeUndefined();
+        } finally {
+            await td();
+        }
+    });
+
+    it('empty router → schemas fall back to plain string (no enum); required-vs-optional preserved per param', async () => {
+        const r = new Router(entriesFrom([]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+
+            const symbolSearch = tools.find((t) => t.name === 'symbol_search')!;
+            const ssSchema = symbolSearch.inputSchema as {
+                properties?: {
+                    langs?: { items?: { type?: string; enum?: unknown } };
+                    manifests?: { items?: { type?: string; enum?: unknown } };
+                };
+                required?: string[];
+            };
+            // langs / manifests stay optional arrays of plain strings
+            expect(ssSchema.properties?.langs?.items?.enum).toBeUndefined();
+            expect(ssSchema.properties?.langs?.items?.type).toBe('string');
+            expect(ssSchema.properties?.manifests?.items?.enum).toBeUndefined();
+            expect(ssSchema.properties?.manifests?.items?.type).toBe('string');
+            expect(ssSchema.required ?? []).not.toContain('langs');
+            expect(ssSchema.required ?? []).not.toContain('manifests');
+
+            const setPrim = tools.find((t) => t.name === 'set_primary')!;
+            const spSchema = setPrim.inputSchema as {
+                properties?: {
+                    lang?: { type?: string; enum?: unknown };
+                    manifest?: { type?: string; enum?: unknown };
+                };
+                required?: string[];
+            };
+            // lang / manifest stay required plain strings
+            expect(spSchema.properties?.lang?.enum).toBeUndefined();
+            expect(spSchema.properties?.lang?.type).toBe('string');
+            expect(spSchema.properties?.manifest?.enum).toBeUndefined();
+            expect(spSchema.properties?.manifest?.type).toBe('string');
+            expect(spSchema.required ?? []).toContain('lang');
+            expect(spSchema.required ?? []).toContain('manifest');
+
+            const lspTool = tools.find((t) => t.name === 'lsp')!;
+            const lspSchema = lspTool.inputSchema as {
+                properties?: {
+                    lang?: { type?: string; enum?: unknown };
+                    via?: { type?: string; enum?: unknown };
+                };
+                required?: string[];
+            };
+            // lsp.lang required plain string; via optional plain string
+            expect(lspSchema.properties?.lang?.enum).toBeUndefined();
+            expect(lspSchema.properties?.lang?.type).toBe('string');
+            expect(lspSchema.required ?? []).toContain('lang');
+            expect(lspSchema.properties?.via?.enum).toBeUndefined();
+            expect(lspSchema.properties?.via?.type).toBe('string');
+            expect(lspSchema.required ?? []).not.toContain('via');
+
+            // positional defs: via optional plain string
+            const defs = tools.find((t) => t.name === 'defs')!;
+            const defsSchema = defs.inputSchema as {
+                properties?: { via?: { type?: string; enum?: unknown } };
+                required?: string[];
+            };
+            expect(defsSchema.properties?.via?.enum).toBeUndefined();
+            expect(defsSchema.properties?.via?.type).toBe('string');
+            expect(defsSchema.required ?? []).not.toContain('via');
+        } finally {
+            await td();
+        }
+    });
+
+    it('lsp.lang is a required enum of active langs and equals set_primary.lang.enum (single LangEnum source)', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver' });
+        const r = new Router(entriesFrom([py, ts]));
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const lspTool = tools.find((t) => t.name === 'lsp')!;
+            const setPrim = tools.find((t) => t.name === 'set_primary')!;
+            const lspSchema = lspTool.inputSchema as {
+                properties?: { lang?: { enum?: string[] } };
+                required?: string[];
+            };
+            const setPrimSchema = setPrim.inputSchema as {
+                properties?: { lang?: { enum?: string[] } };
+            };
+            expect(lspSchema.properties?.lang?.enum).toEqual(
+                expect.arrayContaining(['python', 'typescript'])
+            );
+            expect(lspSchema.properties?.lang?.enum).toHaveLength(2);
+            expect(lspSchema.required ?? []).toContain('lang');
+            // Single-source invariant: both consumers wire to the same LangEnum.
+            expect(lspSchema.properties?.lang?.enum).toEqual(setPrimSchema.properties?.lang?.enum);
+        } finally {
+            await td();
+        }
+    });
+
+    it('symbol_search.manifests is an enum of OK manifest names; binary_not_found EXCLUDED', async () => {
+        const py = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const ts = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsserver' });
+        const broken = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-missing' });
+        const r = new Router([
+            { manifest: py.manifest, server: py, sourceKind: 'config-file', status: 'ok' },
+            { manifest: ts.manifest, server: ts, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: broken.manifest,
+                server: broken,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+        const { client: c, teardown: td } = await buildClientServer(r);
+        try {
+            const { tools } = await c.listTools();
+            const tool = tools.find((t) => t.name === 'symbol_search')!;
+            const schema = tool.inputSchema as {
+                properties?: { manifests?: { items?: { enum?: string[] } } };
+            };
+            expect(schema.properties?.manifests?.items?.enum).toEqual(
+                expect.arrayContaining(['pyright', 'tsserver'])
+            );
+            expect(schema.properties?.manifests?.items?.enum).toHaveLength(2);
+            expect(schema.properties?.manifests?.items?.enum).not.toContain('pyright-missing');
+        } finally {
+            await td();
+        }
+    });
 });
 
 describe('list_languages tool', () => {
@@ -722,25 +1191,41 @@ describe('set_primary tool', () => {
         }
     });
 
-    it('surfaces each validation failure as isError:true with a specific message', async () => {
+    // Post-R7b (lspm-4vb): set_primary.lang and set_primary.manifest are
+    // dynamic enums. Three of the four router-level validation cases (unknown
+    // manifest name, unknown lang, binary_not_found manifest) are now caught
+    // by Zod schema validation at the MCP layer BEFORE reaching the router.
+    // Their original assertions live below as router-direct tests; the
+    // MCP-layer Zod-rejection coverage lives in the new test after that. The
+    // surviving MCP-layer case (cross-dispatch — manifest exists in enum but
+    // isn't a candidate for the lang) keeps its original shape.
+    it('surfaces cross-dispatch validation failure (manifest not a candidate for lang) at MCP layer', async () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const rustAnalyzer = makeMockServer(['rust'], ['**/*.rs'], { name: 'rust-analyzer' });
+        const router = new Router(entriesFrom([pyright, rustAnalyzer]));
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const result = await client.callTool({
+                name: 'set_primary',
+                arguments: { lang: 'python', manifest: 'rust-analyzer' },
+            });
+            expect(result.isError).toBe(true);
+            const text = textOf(result as { content: unknown });
+            expect(text).toMatch(/not a candidate for lang 'python'/);
+        } finally {
+            await teardown();
+        }
+    });
+
+    it('surfaces router-level validation failures (Router.setPrimary) — unknown manifest, unknown lang, binary_not_found', () => {
         const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
         const rustAnalyzer = makeMockServer(['rust'], ['**/*.rs'], { name: 'rust-analyzer' });
         const pyrightMissing = makeMockServer(['python'], ['**/*.py'], {
             name: 'pyright-missing',
         });
         const router = new Router([
-            {
-                manifest: pyright.manifest,
-                server: pyright,
-                sourceKind: 'config-file',
-                status: 'ok',
-            },
-            {
-                manifest: rustAnalyzer.manifest,
-                server: rustAnalyzer,
-                sourceKind: 'config-file',
-                status: 'ok',
-            },
+            { manifest: pyright.manifest, server: pyright, sourceKind: 'config-file', status: 'ok' },
+            { manifest: rustAnalyzer.manifest, server: rustAnalyzer, sourceKind: 'config-file', status: 'ok' },
             {
                 manifest: pyrightMissing.manifest,
                 server: pyrightMissing,
@@ -748,19 +1233,28 @@ describe('set_primary tool', () => {
                 status: 'binary_not_found',
             },
         ]);
+        // Suppress stderr — Router._binaryNotFoundError logs nothing, but
+        // setPrimary emits stderr on success only; these are throws, not logs.
+        expect(() => router.setPrimary('python', 'nope')).toThrow(
+            /Unknown manifest: nope/
+        );
+        expect(() => router.setPrimary('cobol', 'pyright')).toThrow(
+            /Unknown lang: cobol/
+        );
+        expect(() => router.setPrimary('python', 'pyright-missing')).toThrow(
+            /binary_not_found/
+        );
+    });
+
+    it('surfaces Zod schema validation as isError:true when set_primary called with out-of-enum lang/manifest (R7b enum-contract negative coverage)', async () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const rustAnalyzer = makeMockServer(['rust'], ['**/*.rs'], { name: 'rust-analyzer' });
+        const router = new Router(entriesFrom([pyright, rustAnalyzer]));
         const { client, teardown } = await buildClientServer(router);
         try {
-            const cases: Array<{ args: { lang: string; manifest: string }; expected: RegExp }> = [
-                { args: { lang: 'python', manifest: 'nope' }, expected: /Unknown manifest: nope/ },
-                { args: { lang: 'cobol', manifest: 'pyright' }, expected: /Unknown lang: cobol/ },
-                {
-                    args: { lang: 'python', manifest: 'rust-analyzer' },
-                    expected: /not a candidate for lang 'python'/,
-                },
-                {
-                    args: { lang: 'python', manifest: 'pyright-missing' },
-                    expected: /binary_not_found/,
-                },
+            const cases: Array<{ args: { lang: string; manifest: string } }> = [
+                { args: { lang: 'python', manifest: 'nope' } }, // unknown manifest → Zod rejects
+                { args: { lang: 'cobol', manifest: 'pyright' } }, // unknown lang → Zod rejects
             ];
             for (const c of cases) {
                 const result = await client.callTool({
@@ -769,7 +1263,9 @@ describe('set_primary tool', () => {
                 });
                 expect(result.isError).toBe(true);
                 const text = textOf(result as { content: unknown });
-                expect(text).toMatch(c.expected);
+                // Don't over-couple to Zod's exact wording — assert the shape:
+                // some kind of validation error referencing enum / invalid.
+                expect(text.toLowerCase()).toMatch(/invalid|enum/);
             }
         } finally {
             await teardown();

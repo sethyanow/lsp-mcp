@@ -25494,6 +25494,22 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // src/mcp-server.ts
+function enumOrString(values) {
+  return values.length > 0 ? exports_external.enum(values) : exports_external.string();
+}
+function buildDynamicSchemas(router) {
+  const okLangs = Array.from(new Set(router.listLanguages().filter((row) => row.status === "ok").map((row) => row.lang)));
+  const okManifestNames = router.entries.filter((e) => e.status === "ok").map((e) => e.manifest.name);
+  const langItem = enumOrString(okLangs);
+  const manifestItem = enumOrString(okManifestNames);
+  return {
+    LangEnum: langItem,
+    LangsSchema: exports_external.array(langItem).optional(),
+    ManifestEnum: manifestItem,
+    ManifestsSchema: exports_external.array(manifestItem).optional(),
+    ViaSchema: manifestItem.describe("Manifest name to target (overrides primary routing).").optional()
+  };
+}
 var PositionSchema = exports_external.object({
   line: exports_external.number().int().min(0).describe("0-based line number"),
   character: exports_external.number().int().min(0).describe("0-based character offset")
@@ -25507,19 +25523,19 @@ var FileUriSchema = exports_external.string().refine((s) => {
   }
 }, { message: 'must be a local file:// URI (e.g. "file:///abs/path/to/file.py")' }).describe('File URI (e.g. "file:///abs/path/to/file.py")');
 var LspParamsSchema = exports_external.union([exports_external.record(exports_external.any()), exports_external.array(exports_external.any()), exports_external.null()]).describe("JSON-RPC params (object, array, or null)");
-var ViaSchema = exports_external.string().optional().describe("Manifest name to target (overrides primary routing).");
 function createMcpServer(router) {
   const server = new McpServer({
     name: "lsp-mcp",
     version: "0.1.0"
   });
+  const schemas4 = buildDynamicSchemas(router);
   server.registerTool("symbol_search", {
     description: "Search for symbols (classes, functions, variables, etc.) across all configured " + "language servers. Fans workspace/symbol across servers, merges and dedupes " + "results. This is the primary entry point for cross-language code navigation.",
     inputSchema: {
       name: exports_external.string().describe("Symbol name to search for (supports partial matches)"),
       kind: exports_external.string().optional().describe('Filter by symbol kind (e.g. "class", "function", "variable"). Optional.'),
-      langs: exports_external.array(exports_external.string()).optional().describe('Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' + "Omit to search all configured languages."),
-      manifests: exports_external.array(exports_external.string()).optional().describe("Restrict search to specific manifest names (overrides primary-only fan-out).")
+      langs: schemas4.LangsSchema.describe('Restrict search to specific language IDs (e.g. ["python", "typescript"]). ' + "Omit to search all configured languages."),
+      manifests: schemas4.ManifestsSchema.describe("Restrict search to specific manifest names (overrides primary-only fan-out).")
     }
   }, async ({ name, kind, langs, manifests }) => {
     try {
@@ -25547,8 +25563,8 @@ function createMcpServer(router) {
   server.registerTool("set_primary", {
     description: "Swap which candidate manifest is primary for a given lang. Takes effect " + "immediately for subsequent defs/refs/hover calls; no restart. Resets to " + "first-registered on server restart (in-memory only, not persisted). " + "Throws if the lang or manifest is unknown, if the manifest is not a " + "candidate for the lang, or if the manifest's binary is not on PATH.",
     inputSchema: {
-      lang: exports_external.string().describe('langId whose primary to swap (e.g. "python", "bazel").'),
-      manifest: exports_external.string().describe("Name of the candidate manifest to promote to primary.")
+      lang: schemas4.LangEnum.describe('langId whose primary to swap (e.g. "python", "bazel").'),
+      manifest: schemas4.ManifestEnum.describe("Name of the candidate manifest to promote to primary.")
     }
   }, async ({ lang, manifest }) => {
     try {
@@ -25559,7 +25575,7 @@ function createMcpServer(router) {
   });
   server.registerTool("defs", {
     description: "Go-to-definition: returns the location(s) where the symbol at the given " + "position is defined.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas4.ViaSchema }
   }, async ({ file, pos, via }) => {
     try {
       return jsonResult(await router.definitions(file, pos, via));
@@ -25569,7 +25585,7 @@ function createMcpServer(router) {
   });
   server.registerTool("refs", {
     description: "Find all references to the symbol at the given position.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas4.ViaSchema }
   }, async ({ file, pos, via }) => {
     try {
       return jsonResult(await router.references(file, pos, true, via));
@@ -25579,7 +25595,7 @@ function createMcpServer(router) {
   });
   server.registerTool("impls", {
     description: "Find implementations (concrete subclasses / interface implementations) of " + "the symbol at the given position.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas4.ViaSchema }
   }, async ({ file, pos, via }) => {
     try {
       return jsonResult(await router.implementations(file, pos, via));
@@ -25589,7 +25605,7 @@ function createMcpServer(router) {
   });
   server.registerTool("hover", {
     description: "Return type information and documentation for the symbol at the given position.",
-    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+    inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas4.ViaSchema }
   }, async ({ file, pos, via }) => {
     try {
       return jsonResult(await router.hover(file, pos, via));
@@ -25599,7 +25615,7 @@ function createMcpServer(router) {
   });
   server.registerTool("outline", {
     description: "List all symbols defined in a file (document symbol outline).",
-    inputSchema: { file: FileUriSchema, via: ViaSchema }
+    inputSchema: { file: FileUriSchema, via: schemas4.ViaSchema }
   }, async ({ file, via }) => {
     try {
       return jsonResult(await router.documentSymbols(file, via));
@@ -25609,7 +25625,7 @@ function createMcpServer(router) {
   });
   server.registerTool("diagnostics", {
     description: "Return errors and warnings for a file.",
-    inputSchema: { file: FileUriSchema, via: ViaSchema }
+    inputSchema: { file: FileUriSchema, via: schemas4.ViaSchema }
   }, async ({ file, via }) => {
     try {
       return jsonResult(await router.diagnostics(file, via));
@@ -25620,10 +25636,10 @@ function createMcpServer(router) {
   server.registerTool("lsp", {
     description: "Raw LSP passthrough. Send any LSP method directly to the server configured " + "for the given language. Use for methods not covered by the canonical verbs.",
     inputSchema: {
-      lang: exports_external.string().describe('Language ID of the target server (e.g. "python", "typescript")'),
+      lang: schemas4.LangEnum.describe('Language ID of the target server (e.g. "python", "typescript")'),
       method: exports_external.string().describe('LSP method name (e.g. "textDocument/codeLens")'),
       params: LspParamsSchema,
-      via: ViaSchema
+      via: schemas4.ViaSchema
     }
   }, async ({ lang, method, params, via }) => {
     try {
@@ -25636,7 +25652,7 @@ function createMcpServer(router) {
   if (hasCallHierarchy) {
     server.registerTool("call_hierarchy_prepare", {
       description: "Prepare call-hierarchy items at the given position. Pass a returned item to " + "incoming_calls or outgoing_calls to explore the graph.",
-      inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
+      inputSchema: { file: FileUriSchema, pos: PositionSchema, via: schemas4.ViaSchema }
     }, async ({ file, pos, via }) => {
       try {
         return jsonResult(await router.prepareCallHierarchy(file, pos, via));
@@ -25648,7 +25664,7 @@ function createMcpServer(router) {
       description: "Return all callers of the given call-hierarchy item.",
       inputSchema: {
         item: exports_external.record(exports_external.any()).describe("A CallHierarchyItem from call_hierarchy_prepare"),
-        via: ViaSchema
+        via: schemas4.ViaSchema
       }
     }, async ({ item, via }) => {
       try {
@@ -25661,7 +25677,7 @@ function createMcpServer(router) {
       description: "Return all callees of the given call-hierarchy item.",
       inputSchema: {
         item: exports_external.record(exports_external.any()).describe("A CallHierarchyItem from call_hierarchy_prepare"),
-        via: ViaSchema
+        via: schemas4.ViaSchema
       }
     }, async ({ item, via }) => {
       try {
@@ -26042,5 +26058,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=5309D08B5ED500B464756E2164756E21
+//# debugId=B4761B1387A3D79A64756E2164756E21
 //# sourceMappingURL=index.js.map
