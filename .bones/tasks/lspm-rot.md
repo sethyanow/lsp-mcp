@@ -88,7 +88,7 @@ server.registerTool(
 
 Register adjacent to `symbol_search` (both are workspace-scope, no position args). Position it right after the `symbol_search` block so the file layout stays "workspace tools → file tools → call-hierarchy tools."
 
-### Anti-patterns
+### Design invariants (what the implementation must preserve)
 
 - **NO filtering `_entries` by status in `listLanguages`.** The whole point is showing missing-binary manifests so users can diagnose why their LSP isn't routing. Filtering defeats the tool.
 - **NO duplicating `primary` semantics in Router.** `primary` is already encoded in `_langMap.get(langId).primary` — a single string. Resolving at query time keeps the source of truth singular.
