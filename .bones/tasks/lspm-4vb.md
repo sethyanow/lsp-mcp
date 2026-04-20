@@ -13,6 +13,7 @@ parent: lspm-cnq
 
 
 
+
 ## Context
 
 Closes sub-epic `lspm-cnq` SC: *"MCP tool input schemas built dynamically at startup; `lang` / `langs` / `via` / `manifests` parameters expose enum values reflecting currently-active manifests."*
@@ -405,3 +406,6 @@ Walked components: factory `buildDynamicSchemas`, lang-enum derivation, manifest
 ## Log
 
 - [2026-04-20T08:21:28Z] [Seth] Step 16 smoke (post bun run build, dist/index.js): scripts/smoke-mcp-tool.mjs --inspect-schema observed enums on dev box (12 builtins, 7 ok / 5 binary_not_found): symbol_search.langs.items.enum=[c,cpp,objective-c,objective-cpp,go,python,rust,svelte,typescript,typescriptreact,javascript,javascriptreact,zig] (13 langs); symbol_search.manifests.items.enum=[clangd,gopls,pyright,rust-analyzer,svelte-language-server,typescript-language-server,zls] (7 ok, binary_not_found EXCLUDED); defs.via.enum=same 7 ok manifests; set_primary.lang.enum=same 13 langs (REQUIRED); set_primary.manifest.enum=same 7 ok manifests (REQUIRED, binary_not_found EXCLUDED); lsp.lang.enum=same 13 langs (REQUIRED, deep-equals set_primary.lang.enum); lsp.via.enum=same 7 ok manifests. Original positional invocation 'list_languages' still works (regression check passed).
+- [2026-04-20T08:25:17Z] [Seth] Debrief: shipped buildDynamicSchemas factory + 5-tuple + enumOrString helper; wired set_primary.lang/manifest, lsp.lang, all 10 positional via, symbol_search.langs/manifests; module-const ViaSchema removed; both R7 TODOs deleted. Tests 226→243 (+17 net). Smoke harness gained --inspect-schema flag.
+Reflections: SRE caught skeleton miss (lsp.lang absent from R7b scope; flagged in starting-state + design + steps + SCs + adversarial). Adversarial planning predicted 4 R7-test breakages; only 1 outer test (3 inner cases) actually broke — the lsp returns-error test still passed because it asserted only isError:true (Zod's rejection satisfies that). Cycle 5/6 RED tests passed first run thanks to enumOrString helper landing in Cycle 2 — design extraction paid forward. Step 14 final REFACTOR caught a misordered doc comment (buildDynamicSchemas's docblock was attached to enumOrString); fixed.
+Next task inheritance for Phase 1 remainder (R9 + acceptance demo): MCP tool surface now self-documents active LSPs via JSON Schema enums — R9 skill can teach 'inspect schema before probing'; acceptance demo can lead with --inspect-schema rather than list_languages.
