@@ -1,12 +1,13 @@
 ---
 id: lspm-rot
 title: R6 — list_languages MCP tool
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
 
 
 
