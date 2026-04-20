@@ -4,9 +4,12 @@ title: 'Phase 1: Core plugin + multi-candidate routing'
 status: open
 type: epic
 priority: 1
-depends_on: [lspm-501, lspm-z4z, lspm-177, lspm-h1n, lspm-kgj, lspm-mcp, lspm-hlm, lspm-rot]
+depends_on: [lspm-501, lspm-z4z, lspm-177, lspm-h1n, lspm-kgj, lspm-mcp, lspm-hlm, lspm-rot, lspm-zw9]
 parent: lspm-y5n
 ---
+
+
+
 
 
 
@@ -93,3 +96,4 @@ Inherited from parent epic — see `.bones/tasks/lspm-y5n.md`. Phase-1-specific 
 ## Log
 
 - [2026-04-17T20:37:21Z] [Seth] Skeleton freshness update (2026-04-17): rewrote paths and Key Considerations to reflect root-as-plugin layout adopted by lspm-501. SC #1 and #2 marked done (satisfied by lspm-501 empirical verify at commit 633ea50). SC #3, #12 path-prefixes rewritten (manifests/, skills/). 'Built-in defaults dir path' Key Consideration rewritten to point at ../manifests/ relative to dist/. Parent epic lspm-y5n has matching stale paths (Architecture diagram, R8 bullet 1, Seam Contracts, Design Discovery) — flagged here, NOT edited this round per user scope (option 1 covered Phase 1 only). Next task: R4 multi-candidate routing refactor.
+- [2026-04-20T02:10:30Z] [Seth] R6 closed via lspm-rot (commit 9672791). Debrief: no workarounds; design emerged on smoke harness (made reusable scripts/smoke-mcp-tool.mjs instead of one-off per user correction); no toolchain surprises (MCP empty inputSchema worked cleanly). Next task inherits: R7 set_primary has query surface (listLanguages); R7b dynamic schemas can derive enum values from same manifest set; acceptance demo can use list_languages. Reflections: skeleton was unusually accurate (0 SRE edits, all spot-checks passed); SRE found 3 adversarial-planning additions only. User correction: generalize one-off smoke into reusable harness — captured as feedback memory. Remaining Phase 1 SCs: R7 set_primary, R7b dynamic enum schemas, R9 using-lsp-mcp skill, acceptance demo (fresh CC session) + bun run test + zero-env-vars smoke + polyglot symbol_search demo (bundled into acceptance).
