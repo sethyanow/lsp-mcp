@@ -1,12 +1,13 @@
 ---
 id: lspm-hlm
 title: R5 — PATH probe at startup; status field on ManifestEntry
-status: active
+status: closed
 type: task
 priority: 1
 owner: Seth
 parent: lspm-cnq
 ---
+
 
 
 
@@ -377,7 +378,7 @@ Commit body enumerates: new `src/probe.ts`, `ProbeStatus` type, `probeBinaryOnPa
 - [x] Smoke test records real-box probe output (how many of the 12 built-ins are `ok` vs `binary_not_found`) in `bn log lspm-hlm`
 - [x] `bun run test` green; `bun run typecheck` clean; `bun run build` produces bundled `dist/index.js`
 - [x] Sub-epic `lspm-cnq` SC "PATH probe at startup ..." flipped `[ ]` → `[x]`
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R5 complete, R6/R7/R7b still open
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit notes R5 complete, R6/R7/R7b still open
 
 ## Anti-Patterns
 
