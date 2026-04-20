@@ -120,6 +120,87 @@ export class Router {
     }
 
     /**
+     * Swap which candidate manifest is primary for a langId.
+     *
+     * In-memory mutation only — resets to `_buildLangMap`'s first-registered
+     * winner on server restart (parent epic R6 contract; no persistence in
+     * Phase 1). The `primary` field on the `_langMap` slot is mutated in place;
+     * the Map itself is not reallocated and `_entries` order is preserved.
+     *
+     * Validation order (fail fast):
+     *   1. Unknown manifest name → throw with known alternatives.
+     *   2. Unknown langId (no slot) → throw with active langs list.
+     *   3. Manifest exists but isn't a candidate for this lang → throw with
+     *      candidate names.
+     *   4. Manifest is `binary_not_found` → refuse promotion (primary must be
+     *      dispatchable; routing would otherwise skip it per R5 soft-skip and
+     *      agents would see `primary:true` but queries return empty).
+     *
+     * Idempotent: if the requested manifest is already primary, returns the
+     * current shape without writing or logging.
+     *
+     * On successful swap, mutation precedes the stderr log so a log failure
+     * (EPIPE, closed pipe) cannot leave state un-applied.
+     */
+    setPrimary(
+        lang: string,
+        manifestName: string
+    ): { lang: string; primary: string; previous: string } {
+        // 1. Unknown manifest name.
+        const entry = this._byName.get(manifestName);
+        if (!entry) {
+            const known = Array.from(this._byName.keys()).sort();
+            throw new Error(
+                `Unknown manifest: ${manifestName}. Known: ${known.join(', ')}`
+            );
+        }
+
+        // 2. Unknown langId (no slot in _langMap).
+        const slot = this._langMap.get(lang);
+        if (!slot) {
+            const activeLangs = Array.from(this._langMap.keys()).sort();
+            throw new Error(
+                `Unknown lang: ${lang}. Known: ${activeLangs.join(', ')}`
+            );
+        }
+
+        // 3. Manifest must be author-declared for this lang. Uses
+        // `manifest.langIds` rather than `slot.candidates` because _buildLangMap
+        // filters non-ok entries out of candidates — so a binary_not_found
+        // manifest that IS declared for this lang wouldn't reach step 4
+        // otherwise. Author-intent is the right predicate here: "did the
+        // manifest's author say this LSP handles this lang?"
+        if (!entry.manifest.langIds.includes(lang)) {
+            const candidateNames = slot.candidates
+                .map((c) => c.manifest.name)
+                .join(', ');
+            throw new Error(
+                `Manifest ${manifestName} is not a candidate for lang '${lang}'. Candidates: ${candidateNames}`
+            );
+        }
+
+        // 4. binary_not_found: reuse the error formatter from _requireByName
+        // for consistent surface across query (_requireByName) and mutation.
+        if (entry.status !== 'ok') {
+            throw Router._binaryNotFoundError(manifestName, entry.status);
+        }
+
+        const previous = slot.primary;
+        if (previous === manifestName) {
+            // Idempotent no-op. No write, no log.
+            return { lang, primary: manifestName, previous };
+        }
+
+        // Mutate first, then log. Write-order invariant: log failure (EPIPE,
+        // closed pipe) must not prevent the mutation from sticking.
+        slot.primary = manifestName;
+        process.stderr.write(
+            `[lsp-mcp] set_primary: ${lang} ${previous} → ${manifestName}\n`
+        );
+        return { lang, primary: manifestName, previous };
+    }
+
+    /**
      * Return the primary entry whose server owns the file. Iterates
      * `_langMap` in insertion (registration) order; returns the first lang
      * whose primary's `ownsFile` is true. Deterministic across runs.
@@ -445,11 +526,21 @@ export class Router {
             throw new Error(`No manifest named "${name}"`);
         }
         if (entry.status !== 'ok') {
-            throw new Error(
-                `Manifest "${name}" is ${entry.status} — binary not found on PATH`
-            );
+            throw Router._binaryNotFoundError(name, entry.status);
         }
         return entry;
+    }
+
+    /**
+     * Shared error formatter for "manifest exists but its binary isn't on
+     * PATH." Used by `_requireByName` (query surface) and `setPrimary`
+     * (mutation surface) to keep the error phrasing identical across both
+     * paths. Name quoted for readability when the name contains punctuation.
+     */
+    private static _binaryNotFoundError(name: string, status: string): Error {
+        return new Error(
+            `Manifest "${name}" is ${status} — binary not found on PATH`
+        );
     }
 
     private async _openWithPause(server: LspServer, fileUri: string): Promise<void> {

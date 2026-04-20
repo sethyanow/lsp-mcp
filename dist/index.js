@@ -21600,6 +21600,33 @@ class Router {
     }
     return rows;
   }
+  setPrimary(lang, manifestName) {
+    const entry = this._byName.get(manifestName);
+    if (!entry) {
+      const known = Array.from(this._byName.keys()).sort();
+      throw new Error(`Unknown manifest: ${manifestName}. Known: ${known.join(", ")}`);
+    }
+    const slot = this._langMap.get(lang);
+    if (!slot) {
+      const activeLangs = Array.from(this._langMap.keys()).sort();
+      throw new Error(`Unknown lang: ${lang}. Known: ${activeLangs.join(", ")}`);
+    }
+    if (!entry.manifest.langIds.includes(lang)) {
+      const candidateNames = slot.candidates.map((c) => c.manifest.name).join(", ");
+      throw new Error(`Manifest ${manifestName} is not a candidate for lang '${lang}'. Candidates: ${candidateNames}`);
+    }
+    if (entry.status !== "ok") {
+      throw Router._binaryNotFoundError(manifestName, entry.status);
+    }
+    const previous = slot.primary;
+    if (previous === manifestName) {
+      return { lang, primary: manifestName, previous };
+    }
+    slot.primary = manifestName;
+    process.stderr.write(`[lsp-mcp] set_primary: ${lang} ${previous} → ${manifestName}
+`);
+    return { lang, primary: manifestName, previous };
+  }
   primaryForFile(filePath) {
     for (const [, slot] of this._langMap) {
       const entry = this._byName.get(slot.primary);
@@ -21785,9 +21812,12 @@ class Router {
       throw new Error(`No manifest named "${name}"`);
     }
     if (entry.status !== "ok") {
-      throw new Error(`Manifest "${name}" is ${entry.status} — binary not found on PATH`);
+      throw Router._binaryNotFoundError(name, entry.status);
     }
     return entry;
+  }
+  static _binaryNotFoundError(name, status) {
+    return new Error(`Manifest "${name}" is ${status} — binary not found on PATH`);
   }
   async _openWithPause(server, fileUri) {
     const justOpened = await server.openDocument(fileUri, server.defaultLangId);
@@ -25514,6 +25544,19 @@ function createMcpServer(router) {
       return toolError("list_languages", err);
     }
   });
+  server.registerTool("set_primary", {
+    description: "Swap which candidate manifest is primary for a given lang. Takes effect " + "immediately for subsequent defs/refs/hover calls; no restart. Resets to " + "first-registered on server restart (in-memory only, not persisted). " + "Throws if the lang or manifest is unknown, if the manifest is not a " + "candidate for the lang, or if the manifest's binary is not on PATH.",
+    inputSchema: {
+      lang: exports_external.string().describe('langId whose primary to swap (e.g. "python", "bazel").'),
+      manifest: exports_external.string().describe("Name of the candidate manifest to promote to primary.")
+    }
+  }, async ({ lang, manifest }) => {
+    try {
+      return jsonResult(router.setPrimary(lang, manifest));
+    } catch (err) {
+      return toolError("set_primary", err);
+    }
+  });
   server.registerTool("defs", {
     description: "Go-to-definition: returns the location(s) where the symbol at the given " + "position is defined.",
     inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
@@ -25999,5 +26042,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=6CA4036AEF38DDC464756E2164756E21
+//# debugId=5309D08B5ED500B464756E2164756E21
 //# sourceMappingURL=index.js.map

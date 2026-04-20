@@ -135,6 +135,35 @@ export function createMcpServer(router: Router): McpServer {
         }
     );
 
+    // ---- set_primary ---------------------------------------------------------
+
+    server.registerTool(
+        'set_primary',
+        {
+            description:
+                'Swap which candidate manifest is primary for a given lang. Takes effect ' +
+                'immediately for subsequent defs/refs/hover calls; no restart. Resets to ' +
+                'first-registered on server restart (in-memory only, not persisted). ' +
+                'Throws if the lang or manifest is unknown, if the manifest is not a ' +
+                "candidate for the lang, or if the manifest's binary is not on PATH.",
+            inputSchema: {
+                lang: z
+                    .string()
+                    .describe('langId whose primary to swap (e.g. "python", "bazel").'),
+                manifest: z
+                    .string()
+                    .describe('Name of the candidate manifest to promote to primary.'),
+            },
+        },
+        async ({ lang, manifest }) => {
+            try {
+                return jsonResult(router.setPrimary(lang, manifest));
+            } catch (err) {
+                return toolError('set_primary', err);
+            }
+        }
+    );
+
     // ---- defs ----------------------------------------------------------------
 
     server.registerTool(

@@ -1,11 +1,17 @@
 ---
 id: lspm-zw9
 title: R7 — set_primary MCP tool
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
+
+
+
 
 ## Context
 
@@ -29,7 +35,7 @@ This task does NOT ship:
 - `list_languages` tool registration sits between `symbol_search` and `defs` in `mcp-server.ts`. R7's `set_primary` belongs adjacent to `list_languages` (both operate on the routing map) — register directly after `list_languages`.
 - `src/tests/router.test.ts` has `Router — listLanguages` describe (13 tests) as a pattern for shape-based tests. R7 tests join a new `Router — setPrimary` describe following the same fixture conventions (`makeMockServer`, `entriesFrom`, raw `ManifestEntry` literals when `status:'binary_not_found'` needed).
 - `src/tests/mcp-server.test.ts` has `list_languages tool` describe (3 tests) as the MCP-integration pattern for new tools.
-- `_requireByName(name, {context})` (private Router method, introduced by R5 `lspm-hlm`) already throws `"Manifest X is binary_not_found — binary not found on PATH"` for missing-binary access. Reuse the phrasing for R7's manifest-status validation to keep a consistent error surface.
+- `_requireByName(name)` (private Router method at `src/router.ts:442`, introduced by R5 `lspm-hlm`) throws two distinct messages: `No manifest named "<name>"` for unknown names, and `Manifest "<name>" is binary_not_found — binary not found on PATH` for missing-binary access. Reuse the `binary_not_found` phrasing (quoted name) verbatim for R7's status validation to keep a consistent error surface. The unknown-manifest case is NEW phrasing in R7 because it lists known alternatives (`_requireByName` does not) — see Design validation order #1.
 - Test baseline (post R6 close): 202 green across 7 suites.
 
 ## Design
@@ -61,7 +67,7 @@ Validation order (fail fast, clearest error first):
 If validation passes:
 - Capture `previous = slot.primary`.
 - If `previous === manifestName` — no-op. Return `{lang, primary: manifestName, previous}` without writing. Idempotent by design.
-- Else: `slot.primary = manifestName`. Log to stderr: `[lsp-mcp] set_primary: <lang> <previous> → <manifestName>`.
+- Else: **mutate first, then log.** Order is `slot.primary = manifestName` → `process.stderr.write('[lsp-mcp] set_primary: <lang> <previous> → <manifestName>\n')`. Mutation must precede log so a stderr failure (EPIPE / closed pipe) cannot leave state un-applied. No try/catch around the log — EPIPE is a process-wide concern, not R7's job to mask.
 - Return `{lang, primary: manifestName, previous}`.
 
 ### Design invariants (what the implementation must preserve)
@@ -159,6 +165,7 @@ Fixture: two ok candidates. Spy on `process.stderr.write`. Call swap. Assert one
 
 Validate:
 - Single mutation site in Router (`slot.primary = manifestName`). No duplicate `_langMap` writer.
+- Mutation precedes stderr log (write-order invariant from failure catalog). No logger callback wraps the assignment. No try/catch around the stderr write.
 - Error messages point at the user's action (show known alternatives where applicable).
 - Return shape is pure strings (JSON-safe).
 
@@ -200,6 +207,12 @@ Add to the `Router — setPrimary` describe:
 - **Swap back to binary_not_found doesn't regress**: start with ok primary; try to swap to a missing-binary candidate (throws, no state change); verify primary unchanged after the failed attempt. State-corruption regression lock.
 - **Swap observed across all readers**: after swap, `primaryForLang`, `listLanguages`, `candidatesForLang` (order unchanged — only primary flipped), and the fan-out target selection all reflect the new primary.
 - **setPrimary does NOT spawn LSP processes** (failure catalog: Temporal Betrayal parallel to R6). Assert no mock `LspServer` method is invoked during setPrimary.
+- **Cross-slot isolation (multi-langId manifests).** Fixture: manifest `A` declares `langIds: ['typescript', 'javascript']`; manifest `B` declares `langIds: ['typescript']` only. Both ok. Initially `primaryForLang('typescript') === A` and `primaryForLang('javascript') === A` (A registered first). Call `setPrimary('typescript', 'B')`. Assert `primaryForLang('typescript').manifest.name === 'B'` AND `primaryForLang('javascript').manifest.name === 'A'` (UNCHANGED). Also assert `listLanguages()` shows `javascript` row's `primary: true` still pointing at `A`. Regression lock against a future refactor that might accidentally mutate every slot a manifest appears in, instead of just the target slot. Per-slot mutation is the design contract; this test makes it non-regressable.
+- **Empty-string arguments** (failure catalog: Input Hostility). Fixture: one ok candidate for `python`. Two subtests:
+  - `setPrimary('', 'pyright')` throws matching `/Unknown manifest:/` (empty manifest resolves as unknown-manifest per validation order #1).
+  - `setPrimary('python', '')` throws matching `/Unknown manifest:/` (empty manifest, same path).
+  - After each: `primaryForLang('python').manifest.name === 'pyright'` unchanged. Locks in that empty-string args route through unknown-manifest error, not through unknown-lang or a future silent-no-op rewrite.
+- **Synchronous Router call** (failure catalog: Dependency Treachery). Assert `router.setPrimary('python', 'pyright-fork')` returns a plain object (not a Promise): `expect(router.setPrimary(...)).not.toHaveProperty('then')` and `expect(typeof result.lang).toBe('string')`. Regression lock against a future async refactor that would silently break the MCP handler (handler is `async` but doesn't `await` the router call — any Promise would serialize as `{}`).
 
 ### Step 15 — Adversarial MCP: JSON round-trip on success + error
 
@@ -227,7 +240,7 @@ bun run typecheck
 bun run build 2>&1 | tail -5
 ```
 
-Expect baseline 202 + ~15–18 new = ~217–220 green. Typecheck clean. Build succeeds.
+Expect baseline 202 + ~18–21 new = ~220–223 green. Typecheck clean. Build succeeds.
 
 ### Step 18 — Flip sub-epic SC
 
@@ -241,27 +254,30 @@ Stage `src/router.ts`, `src/mcp-server.ts`, `src/tests/router.test.ts`, `src/tes
 
 ## Success Criteria
 
-- [ ] `Router.setPrimary(lang, manifestName): {lang, primary, previous}` implemented in `src/router.ts`
-- [ ] Validation fails fast with specific errors: unknown manifest, unknown lang, not-a-candidate, binary_not_found (each with regression test)
-- [ ] Successful swap mutates `_langMap[lang].primary` in place (no Map reallocation, no reordering of `_entries` or candidates)
-- [ ] No-op when new primary equals current — returns `{lang, primary, previous}` where primary === previous, skips stderr log, no state change
-- [ ] `listLanguages()` reflects the swap on next call (regression-tested — guards future caching)
-- [ ] `primaryForLang(lang)` reflects the swap on next call
-- [ ] `candidatesForLang(lang)` order is unchanged after a swap (only primary string flipped)
-- [ ] Stderr log on successful swap: `[lsp-mcp] set_primary: <lang> <previous> → <new>` (suppressed on no-op)
-- [ ] `binary_not_found` manifest cannot be promoted to primary (refused with informative error; primary unchanged)
-- [ ] MCP tool `set_primary` registered in `src/mcp-server.ts` with `{lang: string, manifest: string}` input schema, try/jsonResult/toolError handler
-- [ ] `set_primary` appears in `client.listTools()` output
-- [ ] `client.callTool({name: 'set_primary', arguments: {lang, manifest}})` returns `{lang, primary, previous}` on success
-- [ ] MCP error surface returns `isError: true` with error message for each of the 4 validation failures (unknown manifest, unknown lang, not-a-candidate, binary_not_found)
-- [ ] `setPrimary` does NOT invoke any `LspServer` methods (spawn safety; parallel to R6)
-- [ ] Sequential swap (A → B → A) restores initial state; each swap reports correct `previous`
-- [ ] Failed swap (e.g., binary_not_found target) leaves primary unchanged — state-corruption regression lock
-- [ ] Response payload JSON-round-trips through `JSON.stringify`/`JSON.parse` without throwing
-- [ ] 202 baseline tests stay green; new tests land (~15–18 new; target ~217–220)
-- [ ] Smoke: `node scripts/smoke-mcp-tool.mjs set_primary '{"lang":"...","manifest":"..."}'` on the dev box returns expected payload; error-path smoke returns `isError` with informative text; both recorded in `bn log lspm-zw9`
-- [ ] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
-- [ ] Sub-epic `lspm-cnq` SC "`set_primary(lang, manifest)` MCP tool swaps primary in-memory without restart." flipped `[ ]` → `[x]`
+- [x] `Router.setPrimary(lang, manifestName): {lang, primary, previous}` implemented in `src/router.ts`
+- [x] Validation fails fast with specific errors: unknown manifest, unknown lang, not-a-candidate, binary_not_found (each with regression test)
+- [x] Successful swap mutates `_langMap[lang].primary` in place (no Map reallocation, no reordering of `_entries` or candidates)
+- [x] No-op when new primary equals current — returns `{lang, primary, previous}` where primary === previous, skips stderr log, no state change
+- [x] `listLanguages()` reflects the swap on next call (regression-tested — guards future caching)
+- [x] `primaryForLang(lang)` reflects the swap on next call
+- [x] `candidatesForLang(lang)` order is unchanged after a swap (only primary string flipped)
+- [x] Stderr log on successful swap: `[lsp-mcp] set_primary: <lang> <previous> → <new>` (suppressed on no-op)
+- [x] `binary_not_found` manifest cannot be promoted to primary (refused with informative error; primary unchanged)
+- [x] MCP tool `set_primary` registered in `src/mcp-server.ts` with `{lang: string, manifest: string}` input schema, try/jsonResult/toolError handler
+- [x] `set_primary` appears in `client.listTools()` output
+- [x] `client.callTool({name: 'set_primary', arguments: {lang, manifest}})` returns `{lang, primary, previous}` on success
+- [x] MCP error surface returns `isError: true` with error message for each of the 4 validation failures (unknown manifest, unknown lang, not-a-candidate, binary_not_found)
+- [x] `setPrimary` does NOT invoke any `LspServer` methods (spawn safety; parallel to R6)
+- [x] Sequential swap (A → B → A) restores initial state; each swap reports correct `previous`
+- [x] Failed swap (e.g., binary_not_found target) leaves primary unchanged — state-corruption regression lock
+- [x] Cross-slot isolation: `setPrimary(langX, M)` where M declares multiple langIds leaves OTHER slots' primaries unchanged (regression lock against accidental multi-slot mutation)
+- [x] Empty-string args: `setPrimary('', 'pyright')` throws `Unknown manifest:`; `setPrimary('python', '')` throws `Unknown manifest:` (regression lock on validation order under empty args)
+- [x] MCP handler invokes `router.setPrimary(...)` synchronously and returns the plain object (not a Promise) — return shape equals `{lang, primary, previous}` on success (regression lock against future async refactor)
+- [x] Response payload JSON-round-trips through `JSON.stringify`/`JSON.parse` without throwing
+- [x] 202 baseline tests stay green; new tests land (~18–21 new; target ~220–223) — **223 green, 21 new**
+- [x] Smoke: `node scripts/smoke-mcp-tool.mjs set_primary '{"lang":"...","manifest":"..."}'` on the dev box returns expected payload; error-path smoke returns `isError` with informative text; both recorded in `bn log lspm-zw9`
+- [x] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
+- [x] Sub-epic `lspm-cnq` SC "`set_primary(lang, manifest)` MCP tool swaps primary in-memory without restart." flipped `[ ]` → `[x]`
 - [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R7 complete; R7b, R9 still open
 
 ## Anti-Patterns
@@ -288,10 +304,52 @@ Stage `src/router.ts`, `src/mcp-server.ts`, `src/tests/router.test.ts`, `src/tes
 
 ### Failure catalog (adversarial planning)
 
-To be filled in by `adversarial-planning` skill at session start. Current adversarial battery in Step 14 covers empty-router, sequential swaps, failed-swap-state-preservation, reader-consistency, and spawn safety — SRE + adversarial-planning should audit for additional encoding/dense/race patterns beyond those.
+Structured findings from the six-category walk (Input Hostility / Encoding / Temporal / Dependency / State / Resource) against the four components: `Router.setPrimary`, `set_primary` MCP tool, stderr log line, error surface. Most categories are covered by existing anti-patterns / adversarial battery / Key Considerations; entries below call out what those don't already lock in.
+
+**Input Hostility: empty-string arguments (`Router.setPrimary`)**
+- Assumption: Callers pass non-empty strings for `lang` and `manifestName`.
+- Betrayal: MCP client sends `{lang: '', manifest: 'pyright'}` or `{lang: 'python', manifest: ''}`. Zod's `z.string()` accepts both; `_byName.get('')` returns undefined; `_langMap.get('')` returns undefined.
+- Consequence: Validation order resolves correctly — empty manifest → "Unknown manifest: " error; empty lang (with valid manifest) → "Unknown lang: " error. No state change, no crash. The risk is a future refactor adding a `.trim().length > 0` precheck that silently reshuffles which error fires first, or worse, accepts an empty string as "unchanged" no-op.
+- Mitigation: Structural — validation order is explicit (manifest first, lang second), and the per-error tests lock specific error messages. Add adversarial tests for empty `lang` and empty `manifest` to prevent silent reshuffle. (See Success Criteria below.)
+
+**State Corruption: write-order invariant (`Router.setPrimary`)**
+- Assumption: `slot.primary = manifestName` executes BEFORE `process.stderr.write(...)`. State is consistent regardless of whether the log succeeds.
+- Betrayal: Future refactor re-orders to "log-then-mutate" for readability, or wraps the mutation inside a logger callback. A stderr EPIPE would then leave the mutation un-applied while the log (if it got part-way) suggests the swap happened. Or a try/catch around the log could accidentally swallow the mutation.
+- Consequence: Observed state (`primaryForLang`) diverges from logged state — the kind of ghost bug that takes hours to reproduce.
+- Mitigation: Structural — make the write-order a stated invariant in Design ("mutate, then log") and extend Step 10 REFACTOR-assess ("Single mutation site") to also check "mutation precedes log, no logger callback wraps the assignment." No test (mocking stderr to throw is fragile and tests the wrong thing); code-review discipline is sufficient because the single-line method is obvious.
+
+**State Corruption: single-writer invariant on `slot.primary`**
+- Assumption: `setPrimary` is the ONLY code path that writes to any `_langMap.<lang>.primary` field. All other references are reads.
+- Betrayal: A future feature (auto-failover when primary's LspServer crashes; policy-driven rotation; test-only state reset) adds a second writer. Two writers interleaved via async microtask boundaries produce race-condition state.
+- Consequence: Intermittent primary flips that don't correspond to any user action; debugging requires scanning the whole codebase for `slot.primary =`.
+- Mitigation: Structural — Step 10 REFACTOR-assess already covers "Single mutation site in Router (`slot.primary = manifestName`). No duplicate `_langMap` writer." Keep that criterion. If a future feature needs a second writer, it must route through `setPrimary` or be explicitly added to the adversarial battery with interleave tests.
+
+**Dependency Treachery: Router call must stay synchronous**
+- Assumption: `router.setPrimary()` is synchronous — handler wraps it in `try { return jsonResult(router.setPrimary(...)) } catch ...` without `await`.
+- Betrayal: Future refactor makes `setPrimary` async (e.g., to re-probe the binary before promotion). Without `await`, the handler would return a Promise as the response payload, which `jsonResult` would stringify as `{}` — silent data loss. A throw inside the async work would become an unhandled rejection.
+- Consequence: MCP client gets `{}` on success (not the `{lang, primary, previous}` triplet). Errors go missing. The tool appears to work but its output is broken.
+- Mitigation: Structural — Anti-Pattern "NO hot-path overhead" already forbids async/filesystem/ensureRunning in `setPrimary`. Test explicitly asserts return shape equals `{lang, primary, previous}` (not `{}`). A future async refactor would break that test immediately.
+
+**Encoding Boundaries: Unicode normalization (deferred)**
+- Assumption: MCP-arrived strings and discovery-registered manifest names use byte-identical UTF-8.
+- Betrayal: Client sends decomposed Unicode (`e` + combining acute), manifest file used precomposed (`é`). Map.get fails silently — user sees "Unknown manifest" despite typing the name correctly.
+- Consequence: Confusing UX for non-ASCII manifest names.
+- Mitigation: Out of scope for Phase 1 (all 12 builtins are ASCII; authored manifests are advisory). Do NOT add NFC normalization in R7 — it changes comparison semantics for Map keys everywhere downstream. Flag as Phase 2+ concern if encountered. No test, no SC — signpost only.
+
+**Skipped categories (with reasons):**
+- **Resource Exhaustion** for setPrimary: O(1) Map lookups + O(N) over `slot.candidates` where N is typically 1-3, max ~10 for Bazel-like langs. Stderr log adds one line per call. No exhaustion path.
+- **Temporal Betrayal** beyond mid-request fan-out (already in Key Considerations): JS is single-threaded; mutation is one assignment. No true race. The `_selectSymbolSearchTargets` snapshot semantics are already documented.
+- **Dependency Treachery** beyond sync-Router-call: setPrimary has no filesystem, network, or subprocess calls — no external dependency to betray.
+- **Input Hostility** beyond empty-string: extreme-length strings just waste a Map lookup; control characters in names would be an author-controlled concern (manifest files), not a runtime trust boundary; type-coercion is prevented by Zod at the MCP layer.
 
 ## Dependencies
 
 - **Blocks:** `lspm-cnq` (parent sub-epic; R7 closes the `set_primary` SC bullet)
 - **Blocked by:** none — R6 (`lspm-rot`) is closed; `_langMap` structure supports in-place mutation
 - **Unlocks:** Phase 1 acceptance demo (bazel `starpls` ↔ `bazel-lsp` swap uses `set_primary`); R7b dynamic schemas (independent but often bundled conceptually)
+
+## Log
+
+- [2026-04-20T05:20:19Z] [Seth] SRE refinement: verified skeleton claims against codebase (src/router.ts:442 _requireByName phrasing, 553 LOC, 202-test baseline, _byName/_langMap structure, no existing primary mutator, mcp-server.ts registration pattern, test fixture conventions). Two additions: (1) Cross-slot isolation adversarial test — multi-langId manifest (e.g. tsls declaring ['typescript','javascript']) + sibling single-langId manifest, swap on one lang must leave other slot primary unchanged. Regression lock against accidental multi-slot mutation. (2) Starting-state _requireByName quote corrected to match actual code (two error messages: 'No manifest named "X"' for unknown, 'Manifest "X" is binary_not_found — binary not found on PATH' for missing binary — clarifies which phrasing R7 reuses). Updated SC count target 16-19 new tests (was 15-18). No design changes: validation order, return shape, invariants, anti-patterns stand as scoped.
+- [2026-04-20T05:24:28Z] [Seth] Adversarial planning: walked 6 categories × 4 components (Router.setPrimary, MCP tool, stderr log, error surface). Failure catalog added to Key Considerations with 5 explicit entries + skipped-with-reason list: (1) Input Hostility empty-string args — resolves via validation order to Unknown-manifest, tests lock order. (2) State Corruption write-order invariant — mutation MUST precede stderr log so EPIPE cannot leave state un-applied; Design + Step 10 REFACTOR-assess updated. (3) State Corruption single-writer — slot.primary has exactly one writer (setPrimary); future auto-failover features must route through it. (4) Dependency Treachery sync-Router-call — handler doesn't await; async refactor would serialize as {} silently; regression test added. (5) Encoding Unicode normalization — out-of-scope Phase 1 signpost. Skipped with reason: Resource (O(1)+O(few)), further Temporal (JS single-threaded), further Dependency (no external calls), further Input Hostility (Zod + author-controlled names). Added 3 new SCs (empty-string, sync-call, cross-slot-already-added). Test count target 18-21 new (was 16-19, was 15-18). No design changes: validation order, return shape, MCP tool shape, anti-patterns all stand.
+- [2026-04-20T05:47:36Z] [Seth] Step 16 smoke outputs on dev box (12 builtins, 7 ok): (1) set_primary python/pyright → idempotent no-op, returned {lang:python, primary:pyright, previous:pyright}; no stderr log line (suppressed on no-op). (2) set_primary python/nonexistent → isError:true with 'set_primary error: Unknown manifest: nonexistent. Known: [12 names alphabetical]'. (3) set_primary cobol/pyright → isError:true with 'set_primary error: Unknown lang: cobol. Known: [13 active langs alphabetical]'. No multi-candidate python on dev box so no A→B swap smoke possible without a fork manifest; Phase 1 acceptance demo (lspm-cnq acceptance task) covers that via bazel starpls↔bazel-lsp.

@@ -1250,3 +1250,396 @@ describe('Router — listLanguages', () => {
         expect(elapsed).toBeLessThan(500);
     });
 });
+
+describe('Router — setPrimary', () => {
+    let stderrSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+        stderrSpy.mockRestore();
+    });
+
+    it('swaps primary for a lang and returns {lang, primary, previous}', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+
+        const result = router.setPrimary('python', 'pyright-fork');
+
+        expect(result).toEqual({
+            lang: 'python',
+            primary: 'pyright-fork',
+            previous: 'pyright',
+        });
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright-fork');
+    });
+
+    it('listLanguages reflects the swap on next call (no caching)', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+
+        // Pre-swap snapshot: pyright primary, pyright-fork not.
+        const before = router.listLanguages();
+        expect(before).toEqual([
+            {
+                lang: 'python',
+                manifest: 'pyright',
+                primary: true,
+                status: 'ok',
+                capabilities: pyright.manifest.capabilities,
+            },
+            {
+                lang: 'python',
+                manifest: 'pyright-fork',
+                primary: false,
+                status: 'ok',
+                capabilities: pyrightFork.manifest.capabilities,
+            },
+        ]);
+
+        router.setPrimary('python', 'pyright-fork');
+
+        // Post-swap: pyright demoted, pyright-fork promoted. Row order preserved.
+        const after = router.listLanguages();
+        expect(after).toEqual([
+            {
+                lang: 'python',
+                manifest: 'pyright',
+                primary: false,
+                status: 'ok',
+                capabilities: pyright.manifest.capabilities,
+            },
+            {
+                lang: 'python',
+                manifest: 'pyright-fork',
+                primary: true,
+                status: 'ok',
+                capabilities: pyrightFork.manifest.capabilities,
+            },
+        ]);
+    });
+
+    it('is an idempotent no-op when the new primary equals the current one (single candidate)', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const router = new Router(entriesFrom([pyright]));
+
+        const result = router.setPrimary('python', 'pyright');
+
+        expect(result).toEqual({
+            lang: 'python',
+            primary: 'pyright',
+            previous: 'pyright',
+        });
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+        // Stderr log is suppressed on no-op.
+        expect(stderrSpy).not.toHaveBeenCalled();
+    });
+
+    it('is an idempotent no-op when the new primary equals the current one (multi-candidate)', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+
+        // pyright is already primary (first-registered). Setting it again is a no-op.
+        const result = router.setPrimary('python', 'pyright');
+
+        expect(result).toEqual({
+            lang: 'python',
+            primary: 'pyright',
+            previous: 'pyright',
+        });
+        expect(stderrSpy).not.toHaveBeenCalled();
+    });
+
+    it('throws on unknown manifest and leaves primary unchanged', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const router = new Router(entriesFrom([pyright]));
+
+        expect(() => router.setPrimary('python', 'nonexistent-manifest')).toThrow(
+            /Unknown manifest: nonexistent-manifest/
+        );
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+    });
+
+    it('throws on unknown lang and leaves primary unchanged', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const router = new Router(entriesFrom([pyright]));
+
+        expect(() => router.setPrimary('rust', 'pyright')).toThrow(/Unknown lang: rust/);
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+    });
+
+    it("throws when manifest is not a candidate for the target lang", () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const rustAnalyzer = makeMockServer(['rust'], ['**/*.rs'], { name: 'rust-analyzer' });
+        const router = new Router(entriesFrom([pyright, rustAnalyzer]));
+
+        expect(() => router.setPrimary('python', 'rust-analyzer')).toThrow(
+            /not a candidate for lang 'python'/
+        );
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+    });
+
+    it('refuses to promote a binary_not_found manifest and leaves primary unchanged', () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const missingServer = makeMockServer(['python'], ['**/*.py'], {
+            name: 'pyright-missing',
+        });
+        const router = new Router([
+            {
+                manifest: okServer.manifest,
+                server: okServer,
+                sourceKind: 'config-file',
+                status: 'ok',
+            },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        expect(() => router.setPrimary('python', 'pyright-missing')).toThrow(
+            /binary_not_found/
+        );
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+    });
+
+    it('logs to stderr on a successful swap with {lang previous → new} format', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+
+        router.setPrimary('python', 'pyright-fork');
+
+        const stderrCalls = stderrSpy.mock.calls.map((c) => String(c[0]));
+        const swapLog = stderrCalls.find((line) =>
+            line.includes('set_primary: python pyright → pyright-fork')
+        );
+        expect(swapLog).toBeDefined();
+        expect(swapLog).toMatch(/^\[lsp-mcp\] set_primary: python pyright → pyright-fork/);
+    });
+
+    // ---- Adversarial battery ----------------------------------------------
+
+    it('setPrimary on an empty router throws Unknown manifest', () => {
+        const router = new Router([]);
+        expect(() => router.setPrimary('python', 'anything')).toThrow(
+            /Unknown manifest: anything/
+        );
+    });
+
+    it('sequential swaps A→B→A restore initial state with correct previous at each step', () => {
+        const a = makeMockServer(['python'], ['**/*.py'], { name: 'a' });
+        const b = makeMockServer(['python'], ['**/*.py'], { name: 'b' });
+        const router = new Router(entriesFrom([a, b]));
+
+        expect(router.setPrimary('python', 'b')).toEqual({
+            lang: 'python',
+            primary: 'b',
+            previous: 'a',
+        });
+        expect(router.setPrimary('python', 'a')).toEqual({
+            lang: 'python',
+            primary: 'a',
+            previous: 'b',
+        });
+        expect(router.primaryForLang('python')?.manifest.name).toBe('a');
+    });
+
+    it('failed swap to a binary_not_found candidate leaves primary unchanged (state-corruption lock)', () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'ok' });
+        const missingServer = makeMockServer(['python'], ['**/*.py'], { name: 'missing' });
+        const router = new Router([
+            {
+                manifest: okServer.manifest,
+                server: okServer,
+                sourceKind: 'config-file',
+                status: 'ok',
+            },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        expect(router.primaryForLang('python')?.manifest.name).toBe('ok');
+        expect(() => router.setPrimary('python', 'missing')).toThrow(/binary_not_found/);
+        expect(router.primaryForLang('python')?.manifest.name).toBe('ok');
+        // listLanguages also reports the same primary after the failed attempt.
+        const rows = router.listLanguages();
+        const primaryRows = rows.filter((r) => r.primary);
+        expect(primaryRows).toHaveLength(1);
+        expect(primaryRows[0]).toMatchObject({ manifest: 'ok' });
+    });
+
+    it('post-swap state is visible to all readers (primaryForLang, listLanguages, candidatesForLang)', () => {
+        const a = makeMockServer(['python'], ['**/*.py'], { name: 'a' });
+        const b = makeMockServer(['python'], ['**/*.py'], { name: 'b' });
+        const router = new Router(entriesFrom([a, b]));
+
+        const candidatesBefore = router
+            .candidatesForLang('python')
+            .map((c) => c.manifest.name);
+
+        router.setPrimary('python', 'b');
+
+        expect(router.primaryForLang('python')?.manifest.name).toBe('b');
+        const rows = router.listLanguages();
+        expect(rows.find((r) => r.manifest === 'b')?.primary).toBe(true);
+        expect(rows.find((r) => r.manifest === 'a')?.primary).toBe(false);
+        // Candidate order unchanged — only primary string flipped.
+        const candidatesAfter = router
+            .candidatesForLang('python')
+            .map((c) => c.manifest.name);
+        expect(candidatesAfter).toEqual(candidatesBefore);
+    });
+
+    it('setPrimary does NOT spawn LSP processes (no mock LspServer methods invoked)', () => {
+        const a = makeMockServer(['python'], ['**/*.py'], { name: 'a' });
+        const b = makeMockServer(['python'], ['**/*.py'], { name: 'b' });
+        const router = new Router(entriesFrom([a, b]));
+
+        // Clear any counts from construction.
+        jest.clearAllMocks();
+
+        router.setPrimary('python', 'b');
+
+        // Spawn-safety: every server method must be untouched.
+        for (const server of [a, b]) {
+            expect(server.ensureRunning).not.toHaveBeenCalled();
+            expect(server.request).not.toHaveBeenCalled();
+            expect(server.openDocument).not.toHaveBeenCalled();
+            expect(server.workspaceSymbol).not.toHaveBeenCalled();
+            expect(server.shutdown).not.toHaveBeenCalled();
+            expect(server.forceKill).not.toHaveBeenCalled();
+        }
+    });
+
+    it('cross-slot isolation: setPrimary on one lang leaves sibling slots of a multi-langId manifest unchanged', () => {
+        // Manifest `ts-like` declares two langIds; manifest `ts-alt` declares only one.
+        // After swapping primary on `typescript`, the `javascript` slot must stay on `ts-like`.
+        const tsLike = makeMockServer(['typescript', 'javascript'], ['**/*.ts', '**/*.js'], {
+            name: 'ts-like',
+        });
+        const tsAlt = makeMockServer(['typescript'], ['**/*.ts'], { name: 'ts-alt' });
+        const router = new Router(entriesFrom([tsLike, tsAlt]));
+
+        expect(router.primaryForLang('typescript')?.manifest.name).toBe('ts-like');
+        expect(router.primaryForLang('javascript')?.manifest.name).toBe('ts-like');
+
+        router.setPrimary('typescript', 'ts-alt');
+
+        expect(router.primaryForLang('typescript')?.manifest.name).toBe('ts-alt');
+        // javascript primary MUST remain ts-like — this is the regression lock.
+        expect(router.primaryForLang('javascript')?.manifest.name).toBe('ts-like');
+
+        const rows = router.listLanguages();
+        const jsRow = rows.find((r) => r.lang === 'javascript' && r.primary);
+        expect(jsRow?.manifest).toBe('ts-like');
+    });
+
+    it('empty-string lang and empty-string manifest route through Unknown manifest error', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const router = new Router(entriesFrom([pyright]));
+
+        // Empty manifest name — unknown manifest fires first per validation order.
+        expect(() => router.setPrimary('python', '')).toThrow(/Unknown manifest:/);
+        // Empty lang with valid manifest — step 2 unknown lang fires.
+        expect(() => router.setPrimary('', 'pyright')).toThrow(/Unknown lang:/);
+        // Both empty — unknown manifest still fires first.
+        expect(() => router.setPrimary('', '')).toThrow(/Unknown manifest:/);
+        // Primary unchanged after all three failures.
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+    });
+
+    it('Router.setPrimary is synchronous — result has no .then and fields are strings', () => {
+        // Regression lock against a future async refactor. The MCP handler is async
+        // but does NOT await router.setPrimary(); if setPrimary returned a Promise,
+        // jsonResult would serialize {} (empty object) and break the tool response.
+        const a = makeMockServer(['python'], ['**/*.py'], { name: 'a' });
+        const b = makeMockServer(['python'], ['**/*.py'], { name: 'b' });
+        const router = new Router(entriesFrom([a, b]));
+
+        const result = router.setPrimary('python', 'b');
+
+        expect(result).not.toHaveProperty('then');
+        expect(typeof result.lang).toBe('string');
+        expect(typeof result.primary).toBe('string');
+        expect(typeof result.previous).toBe('string');
+    });
+
+    it('dense: 20 candidates for one lang, sequential swap through every candidate', () => {
+        const servers = Array.from({ length: 20 }, (_, i) =>
+            makeMockServer(['python'], ['**/*.py'], { name: `candidate-${i}` })
+        );
+        const router = new Router(entriesFrom(servers));
+
+        // First-registered wins initially.
+        expect(router.primaryForLang('python')?.manifest.name).toBe('candidate-0');
+
+        // Walk the candidate list and promote each in turn.
+        let expectedPrevious = 'candidate-0';
+        for (let i = 1; i < 20; i++) {
+            const target = `candidate-${i}`;
+            const res = router.setPrimary('python', target);
+            expect(res).toEqual({
+                lang: 'python',
+                primary: target,
+                previous: expectedPrevious,
+            });
+            expect(router.primaryForLang('python')?.manifest.name).toBe(target);
+            expectedPrevious = target;
+        }
+
+        // Final state is the last-promoted candidate. Candidate ORDER preserved.
+        const candidates = router.candidatesForLang('python').map((c) => c.manifest.name);
+        expect(candidates).toEqual(
+            Array.from({ length: 20 }, (_, i) => `candidate-${i}`)
+        );
+    });
+
+    it('two Router instances built from equivalent entries do not share mutable state', () => {
+        // "Second run" variant: if _langMap slots were accidentally shared between
+        // Router instances (e.g. via a module-level cache or frozen-then-mutated
+        // source), a swap on one router would leak into another.
+        const makeRouter = () => {
+            const a = makeMockServer(['python'], ['**/*.py'], { name: 'a' });
+            const b = makeMockServer(['python'], ['**/*.py'], { name: 'b' });
+            return new Router(entriesFrom([a, b]));
+        };
+        const r1 = makeRouter();
+        const r2 = makeRouter();
+
+        r1.setPrimary('python', 'b');
+
+        expect(r1.primaryForLang('python')?.manifest.name).toBe('b');
+        // r2 must be untouched.
+        expect(r2.primaryForLang('python')?.manifest.name).toBe('a');
+    });
+
+    it('is case-sensitive on both lang and manifest args', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const router = new Router(entriesFrom([pyright]));
+
+        // Upper-case lang — Map.get is strict; routes through Unknown lang.
+        expect(() => router.setPrimary('PYTHON', 'pyright')).toThrow(
+            /Unknown lang: PYTHON/
+        );
+        // Upper-case manifest — routes through Unknown manifest.
+        expect(() => router.setPrimary('python', 'Pyright')).toThrow(
+            /Unknown manifest: Pyright/
+        );
+        // State unchanged after both failures.
+        expect(router.primaryForLang('python')?.manifest.name).toBe('pyright');
+    });
+});

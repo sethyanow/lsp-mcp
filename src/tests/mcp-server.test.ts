@@ -632,3 +632,147 @@ describe('list_languages tool', () => {
         }
     });
 });
+
+describe('set_primary tool', () => {
+    it('is registered in the tool list', async () => {
+        const router = new Router(entriesFrom([makeMockServer(['python'], ['**/*.py'])]));
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const { tools } = await client.listTools();
+            const names = tools.map((t) => t.name);
+            expect(names).toContain('set_primary');
+        } finally {
+            await teardown();
+        }
+    });
+
+    it('swaps primary and returns {lang, primary, previous}; list_languages reflects the swap', async () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const swap = await client.callTool({
+                name: 'set_primary',
+                arguments: { lang: 'python', manifest: 'pyright-fork' },
+            });
+            expect(swap.isError).toBeFalsy();
+            const parsed = JSON.parse(textOf(swap as { content: unknown }));
+            expect(parsed).toEqual({
+                lang: 'python',
+                primary: 'pyright-fork',
+                previous: 'pyright',
+            });
+
+            // Round-trip: observe the swap via list_languages.
+            const listing = await client.callTool({
+                name: 'list_languages',
+                arguments: {},
+            });
+            const rows = JSON.parse(textOf(listing as { content: unknown }));
+            expect(rows).toHaveLength(2);
+            expect(rows).toContainEqual(
+                expect.objectContaining({
+                    lang: 'python',
+                    manifest: 'pyright-fork',
+                    primary: true,
+                })
+            );
+            expect(rows).toContainEqual(
+                expect.objectContaining({
+                    lang: 'python',
+                    manifest: 'pyright',
+                    primary: false,
+                })
+            );
+        } finally {
+            await teardown();
+        }
+    });
+
+    it('success and error responses both round-trip through JSON.stringify/JSON.parse without throwing', async () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            // Success path.
+            const ok = await client.callTool({
+                name: 'set_primary',
+                arguments: { lang: 'python', manifest: 'pyright-fork' },
+            });
+            const okParsed = JSON.parse(textOf(ok as { content: unknown }));
+            expect(() => JSON.stringify(okParsed)).not.toThrow();
+            expect(JSON.parse(JSON.stringify(okParsed))).toEqual(okParsed);
+            // Confirm no internal objects leaked.
+            expect(okParsed).not.toHaveProperty('server');
+
+            // Error path.
+            const err = await client.callTool({
+                name: 'set_primary',
+                arguments: { lang: 'python', manifest: 'nope' },
+            });
+            expect(err.isError).toBe(true);
+            const errText = textOf(err as { content: unknown });
+            expect(() => JSON.stringify(errText)).not.toThrow();
+            // Error text survives an extra round-trip cleanly.
+            expect(JSON.parse(JSON.stringify(errText))).toBe(errText);
+        } finally {
+            await teardown();
+        }
+    });
+
+    it('surfaces each validation failure as isError:true with a specific message', async () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const rustAnalyzer = makeMockServer(['rust'], ['**/*.rs'], { name: 'rust-analyzer' });
+        const pyrightMissing = makeMockServer(['python'], ['**/*.py'], {
+            name: 'pyright-missing',
+        });
+        const router = new Router([
+            {
+                manifest: pyright.manifest,
+                server: pyright,
+                sourceKind: 'config-file',
+                status: 'ok',
+            },
+            {
+                manifest: rustAnalyzer.manifest,
+                server: rustAnalyzer,
+                sourceKind: 'config-file',
+                status: 'ok',
+            },
+            {
+                manifest: pyrightMissing.manifest,
+                server: pyrightMissing,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const cases: Array<{ args: { lang: string; manifest: string }; expected: RegExp }> = [
+                { args: { lang: 'python', manifest: 'nope' }, expected: /Unknown manifest: nope/ },
+                { args: { lang: 'cobol', manifest: 'pyright' }, expected: /Unknown lang: cobol/ },
+                {
+                    args: { lang: 'python', manifest: 'rust-analyzer' },
+                    expected: /not a candidate for lang 'python'/,
+                },
+                {
+                    args: { lang: 'python', manifest: 'pyright-missing' },
+                    expected: /binary_not_found/,
+                },
+            ];
+            for (const c of cases) {
+                const result = await client.callTool({
+                    name: 'set_primary',
+                    arguments: c.args,
+                });
+                expect(result.isError).toBe(true);
+                const text = textOf(result as { content: unknown });
+                expect(text).toMatch(c.expected);
+            }
+        } finally {
+            await teardown();
+        }
+    });
+});
