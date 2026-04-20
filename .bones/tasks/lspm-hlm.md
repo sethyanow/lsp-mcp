@@ -14,6 +14,7 @@ parent: lspm-cnq
 
 
 
+
 ## Context
 
 Advances sub-epic `lspm-cnq` SC: *"PATH probe at startup sets `status: 'ok' | 'binary_not_found'` per manifest; only `ok` manifests join the routing map; all are visible to `list_languages`."*
@@ -432,3 +433,8 @@ Commit body enumerates: new `src/probe.ts`, `ProbeStatus` type, `probeBinaryOnPa
 Smoke 1 (stock, LSP_MCP_CONFIG=/nonexistent): '[lsp-mcp] loaded 12 manifests (builtin: 12)' followed by '[lsp-mcp] 5 manifests have binary_not_found: bash-language-server, bazel-lsp, elixir-ls, lua-language-server, starpls' — 7 of 12 builtins resolve on PATH (pyright, typescript-language-server, gopls, rust-analyzer, zls, clangd, svelte-language-server). Plural form correct (count=5). Alphabetical order correct (b, b, e, l, s).
 Smoke 2 (array-top-level config file with cmd=node): '[lsp-mcp] loaded 13 manifests (builtin: 12, config-file: 1)' same 5-missing list — 'smoke-node' is NOT listed, confirming 'node' probed as ok. layered-discovery count mixing works.
 Config-file schema note: top-level must be JSON array, not {plugins: [...]}.
+- [2026-04-20T00:14:38Z] [Seth] Debrief: 185 tests green (164 baseline + 21 new), typecheck clean, dist rebuilt; smoke on dev box shows 5/12 builtins binary_not_found (bash-language-server, bazel-lsp, elixir-ls, lua-language-server, starpls). Design decisions that emerged: (1) extracted formatMissingBinarySummary to probe.ts for direct unit testing of singular/plural/alphabetical behavior; (2) two separate try/catch in checkExecutableFile for access+stat race safety; (3) config-file schema requires top-level JSON array (not {plugins: [...]}). No workarounds. Toolchain surprise: X_OK on POSIX grants traversal bit to directories — caught during adversarial planning, mitigated with statSync.isFile() gate in both probe branches.
+
+Reflections: (1) SURPRISE — Cycle 2's first run passed because Cycle 1 GREEN over-implemented per skeleton's Design sketch (wrote whole probe including PATH walk). Classic TDD violation — I reverted bare-name logic, watched Cycle 2 RED fail on fake-lsp resolution, re-implemented under discipline. (2) SKELETON — fundamentally sound; SRE+adversarial caught two gaps (isFile gate missing from Design sketch despite Step 14 asserting the behavior; empty-cmd guard under-specified). (3) EPIC FRESHNESS — Phase 1 still has 7 unchecked SCs (R6 list_languages, R7 set_primary, R7b dynamic schemas, R9 using-lsp-mcp skill, comprehensive test coverage, zero-env smoke, CC demo). (4) CROSS-POLLINATION — checkExecutableFile two-try/catch pattern is reusable for any 'exists + accessible + is-file' validator; noted but not refactored out since it's internal.
+
+Memory cycle: no new memories written (TDD discipline learning is generic; skeleton gap is SRE/adversarial's job). Scanned MEMORY.md — no staleness.
