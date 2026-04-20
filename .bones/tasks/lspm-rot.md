@@ -1,11 +1,15 @@
 ---
 id: lspm-rot
 title: R6 — list_languages MCP tool
-status: open
+status: active
 type: task
 priority: 1
+owner: Seth
 parent: lspm-cnq
 ---
+
+
+
 
 
 ## Context
@@ -188,6 +192,9 @@ Add these to `router.test.ts` and/or `mcp-server.test.ts` as applicable:
 - **Call `listLanguages` twice**: second call returns equal shape (idempotency; no caching bugs).
 - **One manifest, many langIds**: emits N rows all with the same `manifest` and `status`.
 - **MCP response is pure JSON** (no circular refs via LspServer): assert `JSON.stringify(response)` doesn't throw and round-trips.
+- **Spawn safety (Failure catalog: Temporal Betrayal)**: build router from mock servers with spyable `ensureRunning` / `request` / `openDocument` / `workspaceSymbol` jest.fns; call `listLanguages()`; assert every mocked method on every server has `.mock.calls.length === 0`. Guards against the implementation accidentally touching `entry.server`.
+- **Primary-slot invariant (Failure catalog: State Corruption)**: single `ok` manifest declaring one langId, no competing candidate — the emitted row MUST have `primary: true`. Guards against future `_buildLangMap` filter regressions.
+- **Duplicate langIds within one manifest (Failure catalog: Input Hostility)**: construct a manifest with `langIds: ['python', 'python']`; assert two rows with identical `{lang: 'python', manifest: <name>}`; documents no-dedupe-at-list-time behavior.
 
 Each is an RED/GREEN cycle; most will pass as regression locks given the Step 2 implementation.
 
@@ -227,25 +234,28 @@ Stage `src/router.ts`, `src/mcp-server.ts`, `src/tests/router.test.ts`, `src/tes
 
 ## Success Criteria
 
-- [ ] `src/router.ts` exports `LanguageInfo` interface with fields `{lang, manifest, primary, status, capabilities}` matching the sub-epic SC shape
-- [ ] `Router.listLanguages(): LanguageInfo[]` method implemented; walks `_entries × manifest.langIds`; no status filter
-- [ ] `primary: true` iff `entry.status === 'ok'` AND `_langMap.get(lang)?.primary === entry.manifest.name`
-- [ ] `binary_not_found` manifests appear in output with `primary: false` and their declared langIds (regression-tested)
-- [ ] Multiple candidates for one lang: only the `_langMap.primary` entry has `primary: true` (regression-tested)
-- [ ] Manifest declaring multiple langIds emits one row per langId, all with the same `manifest` and `status` (regression-tested)
-- [ ] Empty router returns `[]`
-- [ ] `listLanguages()` is idempotent — second call returns the same shape (regression lock)
-- [ ] `capabilities` field returned verbatim from `manifest.capabilities` (schema-defaulted to `{}` when the manifest omits it)
-- [ ] MCP tool `list_languages` registered in `src/mcp-server.ts` with empty `inputSchema`, `try/jsonResult/toolError` handler pattern
-- [ ] `list_languages` appears in `client.listTools()` output (new MCP test asserts)
-- [ ] `client.callTool({name: 'list_languages', arguments: {}})` returns a JSON-serializable array matching `Router.listLanguages()` shape (new MCP test asserts)
-- [ ] No `LspServer` instances leak into MCP response; response round-trips through `JSON.stringify`/`JSON.parse`
-- [ ] Adversarial cases covered: all-missing router, zero-langIds manifest, idempotency, many langIds per manifest
-- [ ] 185 baseline tests stay green; new tests land (~10–12 new; target ~195–197)
-- [ ] Smoke: `list_languages` called against a fresh server with built-in defaults returns entries for 7 ok + 5 missing builtins on the dev box (record in `bn log lspm-rot`)
-- [ ] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
-- [ ] Sub-epic `lspm-cnq` SC "`list_languages` MCP tool returns …" flipped `[ ]` → `[x]`
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R6 complete; R7, R7b, R9 still open
+- [x] `src/router.ts` exports `LanguageInfo` interface with fields `{lang, manifest, primary, status, capabilities}` matching the sub-epic SC shape
+- [x] `Router.listLanguages(): LanguageInfo[]` method implemented; walks `_entries × manifest.langIds`; no status filter
+- [x] `primary: true` iff `entry.status === 'ok'` AND `_langMap.get(lang)?.primary === entry.manifest.name`
+- [x] `binary_not_found` manifests appear in output with `primary: false` and their declared langIds (regression-tested)
+- [x] Multiple candidates for one lang: only the `_langMap.primary` entry has `primary: true` (regression-tested)
+- [x] Manifest declaring multiple langIds emits one row per langId, all with the same `manifest` and `status` (regression-tested)
+- [x] Empty router returns `[]`
+- [x] `listLanguages()` is idempotent — second call returns the same shape (regression lock)
+- [x] `capabilities` field returned verbatim from `manifest.capabilities` (schema-defaulted to `{}` when the manifest omits it)
+- [x] MCP tool `list_languages` registered in `src/mcp-server.ts` with empty `inputSchema`, `try/jsonResult/toolError` handler pattern
+- [x] `list_languages` appears in `client.listTools()` output (new MCP test asserts)
+- [x] `client.callTool({name: 'list_languages', arguments: {}})` returns a JSON-serializable array matching `Router.listLanguages()` shape (new MCP test asserts)
+- [x] No `LspServer` instances leak into MCP response; response round-trips through `JSON.stringify`/`JSON.parse`
+- [x] Adversarial cases covered: all-missing router, zero-langIds manifest, idempotency, many langIds per manifest
+- [x] `listLanguages` does NOT call any `LspServer` methods (no `ensureRunning`, no `shutdown`, no request) — test asserts every `jest.fn()` on the mock server is untouched after `listLanguages()`
+- [x] Invariant regression-locked: single `ok` manifest declaring one langId with no competing candidate ALWAYS emits `primary: true` — guards against future `_buildLangMap` filter regressions
+- [x] Duplicate langIds within one manifest (`langIds: ['python', 'python']`) emit two rows — documented current behavior, no dedupe at list time
+- [x] 185 baseline tests stay green; new tests land (~13–15 new; target ~198–200) *(202 total — 17 new: 13 router listLanguages + 3 MCP + 1 e2e smoke)*
+- [x] Smoke: `list_languages` called against a fresh server with built-in defaults returns entries for 7 ok + 5 missing builtins on the dev box (record in `bn log lspm-rot`) *(recorded — 12 manifests loaded, 7 ok + 5 missing, 18 list_languages rows, 13 primary langs)*
+- [x] `bun run test` green; `bun run typecheck` clean; `bun run build` succeeds
+- [x] Sub-epic `lspm-cnq` SC "`list_languages` MCP tool returns …" flipped `[ ]` → `[x]`
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit notes R6 complete; R7, R7b, R9 still open
 
 ## Anti-Patterns
 
@@ -267,8 +277,32 @@ Stage `src/router.ts`, `src/mcp-server.ts`, `src/tests/router.test.ts`, `src/tes
 - **MCP inputSchema: {} semantics.** An empty zod schema object means "no arguments required." The MCP SDK accepts this. Verify by checking an existing zero-arg pattern — if none exists, the first test confirms behavior.
 - **Test fixture: `makeMockServer` ignores `capabilities` param.** The fixture sets a default capabilities object (`{ workspaceSymbol: { stringPrefilter: true, timeoutMs: 5000 } }`). Tests asserting `capabilities` equality should match that shape or construct manifests via `PluginManifestSchema.parse(...)` for realism.
 
+### Failure catalog (adversarial planning)
+
+**Temporal Betrayal: `listLanguages` must not spawn LSP processes**
+- Assumption: enumeration is a pure read of manifest metadata.
+- Betrayal: future refactor could call `entry.server.ensureRunning()` or read server state, triggering lazy spawn for every candidate.
+- Consequence: one `list_languages` call wakes all 12 built-in LSP processes on first invocation; defeats the lazy-spawn design that keeps dormant candidates at zero cost.
+- Mitigation: the implementation reads only `entry.manifest.*` and `_langMap.get(lang).primary` — never `entry.server`. Regression-locked by asserting every `jest.fn()` on the mock `LspServer` is untouched after `listLanguages()` returns.
+
+**State Corruption: `ok` entry missing primary slot for a declared langId**
+- Assumption: every `ok` entry contributes to `_langMap` for each of its `langIds`.
+- Betrayal: a future `_buildLangMap` refactor (e.g., capability-based filter, langId normalization) could silently exclude an entry without flipping its `status`.
+- Consequence: `listLanguages` shows `status: 'ok'` alongside `primary: false` for an unchallenged manifest — looks broken with no competing candidate to explain it, and the agent has no way to diagnose from the tool surface.
+- Mitigation: invariant test — router with one `ok` manifest declaring one langId, no other candidate, MUST emit `primary: true` for that row. Any future `_buildLangMap` filter that drops the entry breaks this test immediately.
+
+**Input Hostility: duplicate langIds within one manifest**
+- Assumption: `manifest.langIds` is a set of distinct strings.
+- Betrayal: schema (`z.array(z.string())`) does not dedupe; a hand-authored manifest could declare `langIds: ['python', 'python']`.
+- Consequence: `listLanguages` emits two identical rows; not a correctness bug but surprising UX.
+- Mitigation: regression-lock current behavior (two rows, no dedupe in `listLanguages`). If dedupe becomes desired, the fix belongs at schema load, not here — `listLanguages` faithfully represents what the manifest declared.
+
 ## Dependencies
 
 - **Blocks:** `lspm-cnq` (parent sub-epic; R6 closes the `list_languages` SC bullet)
 - **Blocked by:** none — `lspm-hlm` (R5) is closed; status field is available
 - **Unlocks:** R7 `set_primary` (mutation needs a query surface to observe results); R7b dynamic schemas (enum values derive from the manifest set that `list_languages` also enumerates); Phase 1 acceptance task (demo flow uses `list_languages`)
+
+## Log
+
+- [2026-04-20T02:07:39Z] [Seth] R6 complete. listLanguages method + list_languages MCP tool shipped. Tests: 200 → 202 (17 new: 13 router + 3 MCP + 1 e2e smoke). Programmatic smoke via stdio MCP client against dist/index.js on dev box: 12 manifests loaded (7 ok: clangd, gopls, pyright, rust-analyzer, svelte-language-server, typescript-language-server, zls | 5 missing: bash-language-server, bazel-lsp, elixir-ls, lua-language-server, starpls). list_languages returned 18 rows (13 ok + 5 missing); 13 primary langs: c, cpp, go, javascript, javascriptreact, objective-c, objective-cpp, python, rust, svelte, typescript, typescriptreact, zig. Generic reusable smoke harness added at scripts/smoke-mcp-tool.mjs. R7 set_primary, R7b dynamic schemas, R9 using-lsp-mcp skill still open.

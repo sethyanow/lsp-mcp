@@ -5,6 +5,8 @@ import { LspServer } from '../lsp-server';
 import { Router, type ManifestEntry } from '../router';
 import { createMcpServer } from '../mcp-server';
 import { PluginManifestSchema } from '../types';
+import { discoverBuiltinManifests } from '../discover';
+import { probeAll } from '../probe';
 
 const STUB = path.resolve(__dirname, 'fixtures/stub-lsp.js');
 
@@ -120,6 +122,80 @@ describe('e2e: MCP client ↔ Router ↔ stub LSP', () => {
             const locs = JSON.parse(content[0].text);
             expect(locs).toHaveLength(1);
             expect(locs[0].uri).toBe('file:///def.py');
+        } finally {
+            await teardown();
+        }
+    });
+});
+
+// ---- Smoke: list_languages over the real built-in manifest pipeline ------
+//
+// Exercises the full R6 discovery → probe → Router → MCP tool → client path
+// against the shipped default manifests in `manifests/`. No LSP subprocess is
+// spawned (listLanguages is spawn-safe); we only verify routing metadata and
+// probe results flow through the tool surface correctly.
+
+describe('e2e: list_languages over real built-in manifests', () => {
+    it('returns one row per (builtin, langId) with consistent primary/status invariants', async () => {
+        const discovered = discoverBuiltinManifests();
+        const probed = probeAll(discovered);
+        expect(discovered.length).toBeGreaterThanOrEqual(12); // sanity: all shipped defaults loaded
+
+        const entries: ManifestEntry[] = probed.map((p) => ({
+            manifest: p.manifest,
+            server: new LspServer(p.manifest, process.cwd(), '/unused'),
+            sourceKind: p.sourceKind,
+            status: p.status,
+        }));
+        const router = new Router(entries);
+        const { client, teardown } = await buildClient(router);
+        try {
+            const result = await client.callTool({ name: 'list_languages', arguments: {} });
+            expect(result.isError).toBeFalsy();
+
+            const rows = JSON.parse(
+                (result.content as Array<{ type: string; text: string }>)[0].text
+            );
+
+            // Total row count equals sum of langIds across all builtins.
+            const expectedRowCount = discovered.reduce(
+                (n, d) => n + d.manifest.langIds.length,
+                0
+            );
+            expect(rows).toHaveLength(expectedRowCount);
+
+            // Every builtin manifest name appears in the output at least once.
+            const seenManifests = new Set(rows.map((r: { manifest: string }) => r.manifest));
+            for (const d of discovered) {
+                expect(seenManifests.has(d.manifest.name)).toBe(true);
+            }
+
+            // Invariant: every binary_not_found manifest's rows are all primary:false.
+            for (const row of rows) {
+                if (row.status === 'binary_not_found') {
+                    expect(row.primary).toBe(false);
+                }
+            }
+
+            // Invariant: for each unique langId, at most one manifest has primary:true.
+            const primaryByLang = new Map<string, number>();
+            for (const row of rows) {
+                if (row.primary) primaryByLang.set(row.lang, (primaryByLang.get(row.lang) ?? 0) + 1);
+            }
+            for (const count of primaryByLang.values()) {
+                expect(count).toBe(1);
+            }
+
+            // Invariant: every 'ok' manifest has at least one primary:true row
+            // (uncontested-candidate case; builtins don't ship two manifests for the
+            // same langId today). Guards against _buildLangMap filter regressions.
+            for (const d of probed.filter((p) => p.status === 'ok')) {
+                const manifestRows = rows.filter(
+                    (r: { manifest: string }) => r.manifest === d.manifest.name
+                );
+                const primaries = manifestRows.filter((r: { primary: boolean }) => r.primary);
+                expect(primaries.length).toBeGreaterThanOrEqual(1);
+            }
         } finally {
             await teardown();
         }

@@ -114,6 +114,27 @@ export function createMcpServer(router: Router): McpServer {
         }
     );
 
+    // ---- list_languages ------------------------------------------------------
+
+    server.registerTool(
+        'list_languages',
+        {
+            description:
+                'Enumerate every (lang, manifest) pair the router knows about, including ' +
+                'manifests whose binary was not found on PATH. Each entry reports which ' +
+                'manifest is the primary for a given lang, the PATH probe status, and the ' +
+                'manifest-declared LSP capabilities. No arguments.',
+            inputSchema: {},
+        },
+        async () => {
+            try {
+                return jsonResult(router.listLanguages());
+            } catch (err) {
+                return toolError('list_languages', err);
+            }
+        }
+    );
+
     // ---- defs ----------------------------------------------------------------
 
     server.registerTool(

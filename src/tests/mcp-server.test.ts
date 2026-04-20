@@ -561,3 +561,74 @@ describe('Tool schemas expose via/manifests', () => {
         }
     });
 });
+
+describe('list_languages tool', () => {
+    it('is registered in the tool list', async () => {
+        const router = new Router(entriesFrom([makeMockServer(['python'], ['**/*.py'])]));
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const { tools } = await client.listTools();
+            const names = tools.map((t) => t.name);
+            expect(names).toContain('list_languages');
+        } finally {
+            await teardown();
+        }
+    });
+
+    it('returns array matching Router.listLanguages() shape — 1 ok + 1 binary_not_found', async () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'ok-lsp' });
+        const missingServer = makeMockServer(['rust'], ['**/*.rs'], { name: 'missing-lsp' });
+        const router = new Router([
+            { manifest: okServer.manifest, server: okServer, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const result = await client.callTool({ name: 'list_languages', arguments: {} });
+            expect(result.isError).toBeFalsy();
+
+            const parsed = JSON.parse(textOf(result as { content: unknown }));
+            // Matches Router.listLanguages() shape exactly.
+            expect(parsed).toEqual(router.listLanguages());
+            expect(parsed).toHaveLength(2);
+            expect(parsed[0]).toMatchObject({ lang: 'python', manifest: 'ok-lsp', primary: true, status: 'ok' });
+            expect(parsed[1]).toMatchObject({
+                lang: 'rust',
+                manifest: 'missing-lsp',
+                primary: false,
+                status: 'binary_not_found',
+            });
+        } finally {
+            await teardown();
+        }
+    });
+
+    // Adversarial: MCP response must be pure JSON — no LspServer circular refs.
+    it('response payload round-trips through JSON.stringify/JSON.parse (no circular refs)', async () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const router = new Router(entriesFrom([pyright]));
+        const { client, teardown } = await buildClientServer(router);
+        try {
+            const result = await client.callTool({ name: 'list_languages', arguments: {} });
+            const text = textOf(result as { content: unknown });
+            // If the handler leaked a LspServer into the response, JSON.stringify would
+            // throw on the circular reference. The MCP SDK text-wrapping already serialized,
+            // so we verify the payload is idempotent under an additional round-trip.
+            const parsed = JSON.parse(text);
+            expect(() => JSON.stringify(parsed)).not.toThrow();
+            const reencoded = JSON.parse(JSON.stringify(parsed));
+            expect(reencoded).toEqual(parsed);
+            // Confirm no 'server' key leaked from ManifestEntry into LanguageInfo.
+            for (const row of parsed) {
+                expect(row).not.toHaveProperty('server');
+            }
+        } finally {
+            await teardown();
+        }
+    });
+});

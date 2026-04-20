@@ -22,6 +22,23 @@ export interface ManifestEntry {
 }
 
 /**
+ * One (lang, manifest) row surfaced by `Router.listLanguages()` — and,
+ * by extension, the `list_languages` MCP tool.
+ *
+ * Includes manifests whose binary was not found on PATH (status:
+ * `'binary_not_found'`) so agents can diagnose missing LSPs without
+ * reading stderr. `primary` is derived at query time from `_langMap`;
+ * it is never stored on `ManifestEntry`.
+ */
+export interface LanguageInfo {
+    lang: string;
+    manifest: string;
+    primary: boolean;
+    status: ProbeStatus;
+    capabilities: PluginManifest['capabilities'];
+}
+
+/**
  * Router: manages a set of ManifestEntries and dispatches requests to the
  * appropriate entry based on file path or language ID.
  *
@@ -68,6 +85,38 @@ export class Router {
 
     candidatesForLang(langId: string): ManifestEntry[] {
         return this._langMap.get(langId)?.candidates ?? [];
+    }
+
+    /**
+     * Enumerate every (lang, manifest) pair the router knows about, including
+     * manifests whose binary was not found on PATH. Surfaces the input for
+     * the `list_languages` MCP tool.
+     *
+     * Ordering: `_entries` insertion order × `manifest.langIds` declared order.
+     * `primary` is derived from `_langMap`; it is `true` iff the entry is `ok`
+     * AND its manifest is the `_langMap.primary` for that langId.
+     *
+     * This method is side-effect-free — it reads manifest metadata only and
+     * never touches `entry.server`. Calling it must not wake any dormant LSP
+     * process (see `lspm-rot` Failure catalog: Temporal Betrayal).
+     */
+    listLanguages(): LanguageInfo[] {
+        const rows: LanguageInfo[] = [];
+        for (const entry of this._entries) {
+            for (const lang of entry.manifest.langIds) {
+                const slot = this._langMap.get(lang);
+                const primary =
+                    entry.status === 'ok' && slot?.primary === entry.manifest.name;
+                rows.push({
+                    lang,
+                    manifest: entry.manifest.name,
+                    primary,
+                    status: entry.status,
+                    capabilities: entry.manifest.capabilities,
+                });
+            }
+        }
+        return rows;
     }
 
     /**

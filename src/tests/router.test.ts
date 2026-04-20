@@ -961,3 +961,292 @@ describe('Router — ManifestEntry.status gate', () => {
         expect(router.primaryForLang('rust')).toBeUndefined();
     });
 });
+
+describe('Router — listLanguages', () => {
+    it('returns {lang, manifest, primary, status, capabilities} rows for every (entry, langId) pair — ok-only router', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const tsls = makeMockServer(['typescript', 'javascript'], ['**/*.ts', '**/*.js'], {
+            name: 'tsls',
+        });
+
+        const router = new Router(entriesFrom([pyright, tsls]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(3);
+
+        // Row shape — every row has the 5 documented fields.
+        for (const row of rows) {
+            expect(Object.keys(row).sort()).toEqual(
+                ['capabilities', 'lang', 'manifest', 'primary', 'status'].sort()
+            );
+        }
+
+        // Python row (from pyright)
+        expect(rows[0]).toEqual({
+            lang: 'python',
+            manifest: 'pyright',
+            primary: true,
+            status: 'ok',
+            capabilities: pyright.manifest.capabilities,
+        });
+
+        // typescript + javascript rows (from tsls) — both primary:true, same manifest.
+        expect(rows[1]).toEqual({
+            lang: 'typescript',
+            manifest: 'tsls',
+            primary: true,
+            status: 'ok',
+            capabilities: tsls.manifest.capabilities,
+        });
+        expect(rows[2]).toEqual({
+            lang: 'javascript',
+            manifest: 'tsls',
+            primary: true,
+            status: 'ok',
+            capabilities: tsls.manifest.capabilities,
+        });
+    });
+
+    it('binary_not_found manifests surface with primary:false and their declared langIds', () => {
+        const okServer = makeMockServer(['python'], ['**/*.py'], { name: 'ok-lsp' });
+        const missingServer = makeMockServer(['rust'], ['**/*.rs'], { name: 'missing-lsp' });
+
+        const router = new Router([
+            {
+                manifest: okServer.manifest,
+                server: okServer,
+                sourceKind: 'config-file',
+                status: 'ok',
+            },
+            {
+                manifest: missingServer.manifest,
+                server: missingServer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(2);
+
+        expect(rows[0]).toEqual({
+            lang: 'python',
+            manifest: 'ok-lsp',
+            primary: true,
+            status: 'ok',
+            capabilities: okServer.manifest.capabilities,
+        });
+
+        expect(rows[1]).toEqual({
+            lang: 'rust',
+            manifest: 'missing-lsp',
+            primary: false,
+            status: 'binary_not_found',
+            capabilities: missingServer.manifest.capabilities,
+        });
+    });
+
+    it('two ok candidates for one lang: first-registered is primary, other is primary:false', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const pyrightFork = makeMockServer(['python'], ['**/*.py'], { name: 'pyright-fork' });
+
+        const router = new Router(entriesFrom([pyright, pyrightFork]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toEqual({
+            lang: 'python',
+            manifest: 'pyright',
+            primary: true,
+            status: 'ok',
+            capabilities: pyright.manifest.capabilities,
+        });
+        expect(rows[1]).toEqual({
+            lang: 'python',
+            manifest: 'pyright-fork',
+            primary: false,
+            status: 'ok',
+            capabilities: pyrightFork.manifest.capabilities,
+        });
+    });
+
+    it('manifest with multiple langIds emits one row per langId — all sharing manifest/status', () => {
+        const polyglot = makeMockServer(['typescript', 'javascript', 'tsx', 'jsx'], ['**/*.{ts,tsx,js,jsx}'], {
+            name: 'polyglot-ts',
+        });
+
+        const router = new Router(entriesFrom([polyglot]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(4);
+        expect(rows.map((r) => r.lang)).toEqual(['typescript', 'javascript', 'tsx', 'jsx']);
+        // Every row shares the same manifest name + status; each is primary for its lang.
+        for (const row of rows) {
+            expect(row.manifest).toBe('polyglot-ts');
+            expect(row.status).toBe('ok');
+            expect(row.primary).toBe(true);
+        }
+    });
+
+    it('empty router returns []', () => {
+        const router = new Router([]);
+        expect(router.listLanguages()).toEqual([]);
+    });
+
+    // ---- Adversarial battery (Step 12 + Failure catalog) ----------------------
+
+    it('all manifests binary_not_found: every row has primary:false', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const rustAnalyzer = makeMockServer(['rust'], ['**/*.rs'], { name: 'rust-analyzer' });
+
+        const router = new Router([
+            {
+                manifest: pyright.manifest,
+                server: pyright,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+            {
+                manifest: rustAnalyzer.manifest,
+                server: rustAnalyzer,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        const rows = router.listLanguages();
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+            expect(row.primary).toBe(false);
+            expect(row.status).toBe('binary_not_found');
+        }
+    });
+
+    it('manifest with zero langIds emits zero rows for that manifest', () => {
+        const normal = makeMockServer(['python'], ['**/*.py'], { name: 'normal' });
+        const empty = makeMockServer([], [], { name: 'empty-langids' });
+
+        const router = new Router(entriesFrom([normal, empty]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0].manifest).toBe('normal');
+        expect(rows.find((r) => r.manifest === 'empty-langids')).toBeUndefined();
+    });
+
+    it('calling listLanguages twice returns equivalent shape (idempotency; no caching bugs)', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const tsls = makeMockServer(['typescript'], ['**/*.ts'], { name: 'tsls' });
+        const router = new Router(entriesFrom([pyright, tsls]));
+
+        const first = router.listLanguages();
+        const second = router.listLanguages();
+
+        expect(second).toEqual(first);
+    });
+
+    // Failure catalog: Temporal Betrayal — listLanguages must not spawn LSP processes
+    it('listLanguages does NOT call any LspServer methods (spawn safety)', () => {
+        const pyright = makeMockServer(['python'], ['**/*.py'], { name: 'pyright' });
+        const tsls = makeMockServer(['typescript', 'javascript'], ['**/*.ts'], { name: 'tsls' });
+        const missing = makeMockServer(['rust'], ['**/*.rs'], { name: 'missing' });
+
+        const router = new Router([
+            { manifest: pyright.manifest, server: pyright, sourceKind: 'config-file', status: 'ok' },
+            { manifest: tsls.manifest, server: tsls, sourceKind: 'config-file', status: 'ok' },
+            {
+                manifest: missing.manifest,
+                server: missing,
+                sourceKind: 'config-file',
+                status: 'binary_not_found',
+            },
+        ]);
+
+        // Clear any calls that happened during construction (e.g., ownsFile probes).
+        jest.clearAllMocks();
+
+        router.listLanguages();
+
+        for (const server of [pyright, tsls, missing]) {
+            expect(server.ensureRunning).not.toHaveBeenCalled();
+            expect(server.shutdown).not.toHaveBeenCalled();
+            expect(server.forceKill).not.toHaveBeenCalled();
+            expect(server.request).not.toHaveBeenCalled();
+            expect(server.openDocument).not.toHaveBeenCalled();
+            expect(server.waitForAnalysis).not.toHaveBeenCalled();
+            expect(server.workspaceSymbol).not.toHaveBeenCalled();
+            expect(server.ownsFile).not.toHaveBeenCalled();
+            expect(server.ownsLang).not.toHaveBeenCalled();
+        }
+    });
+
+    // Failure catalog: State Corruption — ok entry missing primary slot
+    it('single ok manifest with one langId, no competing candidate: primary is ALWAYS true (invariant lock)', () => {
+        const solo = makeMockServer(['python'], ['**/*.py'], { name: 'solo' });
+        const router = new Router(entriesFrom([solo]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0].primary).toBe(true);
+        expect(rows[0].status).toBe('ok');
+    });
+
+    // Failure catalog: Input Hostility — duplicate langIds within one manifest
+    it('duplicate langIds within one manifest emit two rows — no dedupe at list time', () => {
+        const dupedLangs = makeMockServer(['python', 'python'], ['**/*.py'], { name: 'duped' });
+        const router = new Router(entriesFrom([dupedLangs]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toMatchObject({ lang: 'python', manifest: 'duped' });
+        expect(rows[1]).toMatchObject({ lang: 'python', manifest: 'duped' });
+    });
+
+    // Adversarial (stress test): encoding boundaries — empty-string and non-ASCII langIds.
+    // Schema validates langIds as z.array(z.string()) — does not reject empty or unicode.
+    // Expectation: listLanguages faithfully reports whatever the manifest declares; it
+    // is not the enumeration's job to validate lang-ID well-formedness.
+    it('tolerates empty-string and non-ASCII langIds without dropping, crashing, or mangling', () => {
+        const weirdLangs = makeMockServer(['', '日本語', '\u0000', 'plain'], ['**/*.x'], {
+            name: 'weird-langs',
+        });
+        const router = new Router(entriesFrom([weirdLangs]));
+        const rows = router.listLanguages();
+
+        expect(rows).toHaveLength(4);
+        expect(rows.map((r) => r.lang)).toEqual(['', '日本語', '\u0000', 'plain']);
+        // Each langId owns its own slot in _langMap, so first-registered-wins still applies
+        // per-lang: this single manifest is primary for each of its 4 distinct langIds.
+        for (const row of rows) {
+            expect(row.manifest).toBe('weird-langs');
+            expect(row.primary).toBe(true);
+            expect(row.status).toBe('ok');
+        }
+        // Round-trips through JSON without corruption (critical for the MCP surface).
+        const reencoded = JSON.parse(JSON.stringify(rows));
+        expect(reencoded).toEqual(rows);
+    });
+
+    // Adversarial (stress test): dense — 50 manifests × 4 langIds each.
+    // Expectation: O(N × M) enumeration completes quickly; no quadratic blowup from
+    // the nested loop + _langMap lookup.
+    it('scales linearly across 50 manifests × 4 langIds (dense case)', () => {
+        const servers = Array.from({ length: 50 }, (_, i) =>
+            makeMockServer([`lang-${i}-a`, `lang-${i}-b`, `lang-${i}-c`, `lang-${i}-d`], [`**/*.${i}`], {
+                name: `manifest-${i}`,
+            })
+        );
+        const router = new Router(entriesFrom(servers));
+
+        const started = Date.now();
+        const rows = router.listLanguages();
+        const elapsed = Date.now() - started;
+
+        expect(rows).toHaveLength(200);
+        // Every row is primary:true (each lang has exactly one candidate).
+        expect(rows.filter((r) => r.primary)).toHaveLength(200);
+        // Wall-clock sanity — linear enumeration should finish in single-digit ms.
+        expect(elapsed).toBeLessThan(500);
+    });
+});

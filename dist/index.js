@@ -21583,6 +21583,23 @@ class Router {
   candidatesForLang(langId) {
     return this._langMap.get(langId)?.candidates ?? [];
   }
+  listLanguages() {
+    const rows = [];
+    for (const entry of this._entries) {
+      for (const lang of entry.manifest.langIds) {
+        const slot = this._langMap.get(lang);
+        const primary = entry.status === "ok" && slot?.primary === entry.manifest.name;
+        rows.push({
+          lang,
+          manifest: entry.manifest.name,
+          primary,
+          status: entry.status,
+          capabilities: entry.manifest.capabilities
+        });
+      }
+    }
+    return rows;
+  }
   primaryForFile(filePath) {
     for (const [, slot] of this._langMap) {
       const entry = this._byName.get(slot.primary);
@@ -25487,6 +25504,16 @@ function createMcpServer(router) {
       return toolError("symbol_search", err);
     }
   });
+  server.registerTool("list_languages", {
+    description: "Enumerate every (lang, manifest) pair the router knows about, including " + "manifests whose binary was not found on PATH. Each entry reports which " + "manifest is the primary for a given lang, the PATH probe status, and the " + "manifest-declared LSP capabilities. No arguments.",
+    inputSchema: {}
+  }, async () => {
+    try {
+      return jsonResult(router.listLanguages());
+    } catch (err) {
+      return toolError("list_languages", err);
+    }
+  });
   server.registerTool("defs", {
     description: "Go-to-definition: returns the location(s) where the symbol at the given " + "position is defined.",
     inputSchema: { file: FileUriSchema, pos: PositionSchema, via: ViaSchema }
@@ -25972,5 +25999,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-//# debugId=1CF1014858A4DF2764756E2164756E21
+//# debugId=6CA4036AEF38DDC464756E2164756E21
 //# sourceMappingURL=index.js.map
