@@ -1,11 +1,13 @@
 ---
 id: lspm-8cu
 title: R9 — using-lsp-mcp skill (polyglot symbol_search-first agent guidance)
-status: active
+status: closed
 type: task
 priority: 1
 parent: lspm-cnq
 ---
+
+
 
 
 
@@ -173,7 +175,7 @@ Stage `skills/using-lsp-mcp/SKILL.md`, `.bones/tasks/lspm-8cu.md`, `.bones/tasks
 - [x] If body grows past ~2200 words, the three examples are split into `skills/using-lsp-mcp/references/examples-{python-rust,ts-go,c-embedded}.md` with inline summaries (progressive disclosure). Otherwise keep flat. — body stayed flat at 1822 words; no split needed
 - [x] `bun run test` 243 green; `bun run typecheck` clean (no regressions — skill content has no test impact)
 - [x] Sub-epic `lspm-cnq` SC for `using-lsp-mcp/SKILL.md` flipped `[ ]` → `[x]` with satisfaction note pointing at `lspm-8cu` — line 61 + line 89 of lspm-cnq.md flipped with full satisfaction note
-- [ ] Single commit on `dev`, pushed via bare `git push`. Commit notes R9 closed; acceptance task (README + cold CC session demo) still open
+- [x] Single commit on `dev`, pushed via bare `git push`. Commit notes R9 closed; acceptance task (README + cold CC session demo) still open — commit 9b5fe27
 
 ## Anti-Patterns
 
@@ -302,3 +304,4 @@ Skipped categories: Input Hostility (rules, not inputs); Temporal (static); Stat
 
 - [2026-04-20T15:16:45Z] [Seth] SRE (fresh session): all 10 categories pass. Claims spot-checked: SKILL.md placeholder ✓, plugin.json path ✓, smoke-mcp-tool.mjs --inspect-schema ✓ (live output shows 13 tools, symbol_search.langs.items.enum populated), skill-reviewer cached at plugin-dev/98e39a661d82/ ✓, 243 test baseline ✓, call_hierarchy_* published (≥1 manifest declares capabilities.callHierarchy on dev box). Two gap-fills made (no redesign): (1) Step 2 — halt-if-build-fails guard added; quoted enum values must be marked 'example from a dev box' to prevent stale-value drift. (2) Steps 3+5 — clarified that the Agent tool return message IS the capture; /tmp files are optional audit logs, not required. Strengths: Design spec is detailed (7 sections, word targets), empirical anchor in Step 2, 9 lockworthy anti-patterns, 4-entry failure catalog seeded for adversarial-planning. No redesign — skeleton's design choices (third-person desc, imperative body, three examples, flat-unless-2200w) kept as-is.
 - [2026-04-20T15:19:25Z] [Seth] Adversarial planning complete. Failure catalog: 7 components walked (frontmatter, body, examples, tool surface, empirical anchor, reviewer loop, anti-patterns). 12 catalog entries across 5 categories. One new SC emerged: quoted enum values must carry 'example from a dev box' disclaimer (Stale Enum Values mitigation). Key risk clusters: (1) Input Hostility in description — users don't use jargon, so description must front-load everyday phrasings. (2) Temporal in examples — position-counting drift would self-defeat the skill; anti-pattern + spot-grep + reviewer is triple-lock. (3) Dependency in reviewer loop — vague reviewer output → escalate; phantom re-flagging → counts against cap (SRE edit). All mitigations are structural (anti-patterns, Step 2 halt-on-fail, Step 5 re-flag tracking, description front-loading). No design changes; 1 new SC.
+- [2026-04-20T15:37:29Z] [Seth] Debrief: shipped 1822-word SKILL.md with three cross-language examples (pyo3, gRPC, C-ext), 6 anti-patterns, failure-modes section, provenance comments on every numeric pos. No workarounds. Design emerged: 'example from a dev box' disclaimer on inline enum values (Stale Enum Values mitigation from adversarial-planning) became a new SC; iteration 2's manifest/manifests plural/singular finding surfaced that schema has BOTH forms (symbol_search plural, set_primary singular); example 3's via: clangd pedagogical framing added during iteration 2. Toolchain surprise: skill-reviewer iteration 1 caught 2 critical tool-signature bugs (hover vs outline/diagnostics grouping; incoming/outgoing_calls input shape) by reading src/mcp-server.ts directly — high-signal review. Iteration 2 miscounted tools (13 actual vs 12 claimed) — reviewer fallible, source authoritative. 3 iterations to converge, well within cap. Next task inherits: phase 1 acceptance task (README updates + zero-env-vars smoke + cold CC session polyglot demo) — MCP tool surface is self-documenting via R7b schemas, so demo can lead with --inspect-schema. Reflections: skeleton accurate (2 minor SRE gap-fills, 1 new SC from adversarial); 3-iteration reviewer loop converged cleanly; rejected-finding documentation pattern worked (M1/M3 on iteration 2 rejected with documented reasoning, reviewer iteration 3 did not re-flag). No user corrections. One new reference memory written: skill-reviewer as content-task acceptance gate.
