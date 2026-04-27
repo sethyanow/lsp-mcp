@@ -77,3 +77,6 @@ Generic `Read` + `Edit` is fine for config files, docs, or ad-hoc string patches
 - `manifests/` — 12 built-in default manifests (pyright, tsserver, gopls, rust-analyzer, zls, clangd, lua-language-server, elixir-ls, svelte-language-server, bash-language-server, starpls, bazel-lsp).
 - `.claude-plugin/plugin.json` — MCP server config, `mcpServers` inlined, `${CLAUDE_PLUGIN_ROOT}/dist/index.js` entry.
 - `.claude-plugin/marketplace.json` — marketplace manifest at repo root.
+
+
+@_auto_memory/MEMORY.md

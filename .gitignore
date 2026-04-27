@@ -1,3 +1,28 @@
+
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index\
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+7agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+7agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+5agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+5agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
+<agent><docs_index>
 # Logs
 logs
 *.log
@@ -142,3 +167,4 @@ vite.config.ts.timestamp-*
 .bones/cache/
 .chunkhound.json
 .chunkhound/
+.omc
