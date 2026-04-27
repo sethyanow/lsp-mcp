@@ -166,5 +166,6 @@ vite.config.ts.timestamp-*
 
 .bones/cache/
 .chunkhound.json
-.chunkhound/
+.chunkhound
 .omc
+dist/
